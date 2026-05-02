@@ -61,6 +61,74 @@ function storeAutoMxValidate(val) {
     });
 }
 
+// ── Country selection ──────────────────────────────────────────────────────
+// Maps ISO 3166-1 alpha-2 codes to a list of ccTLDs we'll use to restrict
+// queries when the user picks a country and ticks "Restrict to TLD".
+// The list mirrors COUNTRY_TLDS in cli/paris.js so behaviour is consistent
+// between the extension and the standalone CLI/exe.
+var POPUP_COUNTRY_TLDS = {
+    US: ['us', 'com'], GB: ['uk', 'co.uk'], CA: ['ca'],
+    AU: ['au', 'com.au'], NZ: ['nz', 'co.nz'], IE: ['ie'],
+    IN: ['in', 'co.in'], SG: ['sg', 'com.sg'], HK: ['hk', 'com.hk'],
+    MY: ['my', 'com.my'], ID: ['id', 'co.id'], TH: ['th', 'co.th'],
+    PH: ['ph', 'com.ph'], VN: ['vn', 'com.vn'],
+    JP: ['jp', 'co.jp'], KR: ['kr', 'co.kr'], CN: ['cn', 'com.cn'],
+    TW: ['tw', 'com.tw'],
+    AE: ['ae', 'com.ae'], SA: ['sa', 'com.sa'], QA: ['qa', 'com.qa'],
+    KW: ['kw', 'com.kw'], BH: ['bh', 'com.bh'], OM: ['om', 'com.om'],
+    IL: ['il', 'co.il'], TR: ['tr', 'com.tr'],
+    EG: ['eg', 'com.eg'], MA: ['ma', 'co.ma'], ZA: ['za', 'co.za'],
+    NG: ['ng', 'com.ng'], KE: ['ke', 'co.ke'], GH: ['gh', 'com.gh'],
+    DE: ['de'], FR: ['fr'], ES: ['es'], IT: ['it'], NL: ['nl'], BE: ['be'],
+    CH: ['ch'], AT: ['at'], SE: ['se'], NO: ['no'], DK: ['dk'], FI: ['fi'],
+    IS: ['is'], PT: ['pt'], GR: ['gr'], PL: ['pl'], CZ: ['cz'], SK: ['sk'],
+    HU: ['hu'], RO: ['ro'], BG: ['bg'], HR: ['hr'], SI: ['si'], RS: ['rs'],
+    EE: ['ee'], LV: ['lv'], LT: ['lt'],
+    RU: ['ru'], UA: ['ua'], BY: ['by'],
+    BR: ['br', 'com.br'], MX: ['mx', 'com.mx'], AR: ['ar', 'com.ar'],
+    CL: ['cl'], CO: ['co', 'com.co'], PE: ['pe', 'com.pe'],
+    VE: ['ve', 'com.ve'], UY: ['uy', 'com.uy']
+};
+
+function popupCountryFilter(code) {
+    if (!code) return null;
+    var c = String(code).toUpperCase().replace(/[^A-Z]/g, '');
+    var tlds = POPUP_COUNTRY_TLDS[c];
+    if (!tlds || !tlds.length) return null;
+    if (tlds.length === 1) return 'site:.' + tlds[0];
+    return '(' + tlds.map(function (t) { return 'site:.' + t; }).join(' OR ') + ')';
+}
+
+function storeCountry(val) {
+    chrome.storage.local.set({ country: val || '' });
+}
+
+function storeCountryTld(val) {
+    chrome.storage.local.set({ countryRestrictTld: !!val });
+}
+
+function restoreCountry() {
+    chrome.storage.local.get('country', function (items) {
+        var val = items.country || '';
+        if ($('#country-select').length) {
+            $('#country-select').val(val);
+        }
+    });
+}
+
+function restoreCountryTld() {
+    chrome.storage.local.get('countryRestrictTld', function (items) {
+        // Default ON so picking a country actually narrows results unless
+        // the user explicitly opts out.
+        var val = (items.countryRestrictTld === undefined || items.countryRestrictTld === null)
+            ? true
+            : !!items.countryRestrictTld;
+        if ($('#country-tld-checkbox').length) {
+            $('#country-tld-checkbox').get(0).checked = val;
+        }
+    });
+}
+
 function storeSearchEngine(val) {
     chrome.storage.local.set({
         searchEngine: val
@@ -287,12 +355,44 @@ function getQueries() {
     var locationExactMatch = $('#location-exact-match-checkbox').get(0).checked;
     var term2ExactMatch = $('#term2-exact-match-checkbox').get(0).checked;
 
+    // Country filter — when set, prepend a site:.<tld> filter to every
+    // footprint so results are restricted to that country's web. Only
+    // applied if the "Restrict to TLD" checkbox is also checked.
+    var countryCode = $('#country-select').length ? $('#country-select').val() : '';
+    var countryRestrict = $('#country-tld-checkbox').length
+        ? $('#country-tld-checkbox').get(0).checked
+        : false;
+    var countryTldFilter = (countryCode && countryRestrict)
+        ? popupCountryFilter(countryCode)
+        : null;
+    // Build a list of `site:.<tld>` tokens for the selected country so we
+    // can detect whether a custom or built-in footprint already pins itself
+    // to one of those TLDs and skip prepending in that case (avoids
+    // redundant filters like `(site:.us OR site:.com) site:.us "@" foo`).
+    var countrySiteTokens = [];
+    if (countryCode && countryRestrict) {
+        var tlds = POPUP_COUNTRY_TLDS[String(countryCode).toUpperCase()] || [];
+        countrySiteTokens = tlds.map(function (t) { return 'site:.' + t; });
+    }
+
     // Expand footprint OR terms into separate queries for maximum coverage
     var footprintLines = $('#footprint-input').val().split(/[\n]+/g)
         .filter(function (s) { return s.trim().length; })
         .reduce(function (acc, line) {
             return acc.concat(_expandORTerms(line));
         }, []);
+
+    if (countryTldFilter) {
+        footprintLines = footprintLines.map(function (line) {
+            // Skip prepending if the footprint already contains any
+            // `site:.<tld>` from the selected country, regardless of where
+            // it appears in the line.
+            for (var k = 0; k < countrySiteTokens.length; k++) {
+                if (line.indexOf(countrySiteTokens[k]) !== -1) return line;
+            }
+            return countryTldFilter + ' ' + line;
+        });
+    }
 
     var queries = buildQueries(
         footprintLines,
@@ -390,6 +490,17 @@ _onInit(function () {
             $('#cse-row').hide();
         }
     });
+
+    if ($('#country-select').length) {
+        $('#country-select').on('change', function () {
+            storeCountry($(this).val());
+        });
+    }
+    if ($('#country-tld-checkbox').length) {
+        $('#country-tld-checkbox').on('click', function () {
+            storeCountryTld(this.checked);
+        });
+    }
     
     $('#location-exact-match-checkbox').on('click', function () {
         storeLocationExactMatch(this.checked);
@@ -412,6 +523,8 @@ _onInit(function () {
     restoreAutoMxValidate();
     restoreSearchEngine();
     restoreMaxPages();
+    restoreCountry();
+    restoreCountryTld();
     
     log.i('after query : ', $('#delayInput').val());
     

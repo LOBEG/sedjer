@@ -459,7 +459,34 @@ without Node installed.
 
 `--out <file>` · `--format json\|csv\|txt` · `--max-pages N` ·
 `--concurrency N` · `--include-isp` · `--include-roles` ·
-`--min-confidence N` · `--domain D` · `--mx`
+`--min-confidence N` · `--domain D` · `--country CC` ·
+`--follow-contact` · `--mx`
+
+### Country targeting
+
+Use `--country` (CLI) or the **Country** dropdown in the popup to restrict
+results to a specific country's web. Supported codes (ISO 3166-1 alpha-2,
+case-insensitive) currently total **70**:
+
+```
+US GB CA AU NZ IE  IN SG HK MY ID TH PH VN  JP KR CN TW
+AE SA QA KW BH OM IL TR  EG MA ZA NG KE GH
+DE FR ES IT NL BE CH AT  SE NO DK FI IS PT GR
+PL CZ SK HU RO BG HR SI RS  EE LV LT  RU UA BY
+BR MX AR CL CO PE VE UY
+```
+
+A multi-TLD country like the US expands to `(site:.us OR site:.com)`; a
+single-TLD country like Germany expands to `site:.de`. The filter is
+prepended to your query, so existing `site:` operators still apply.
+
+### Deep DB extraction
+
+Pass `--follow-contact` (CLI) to make `extract` / `search` also fetch each
+result page's `/contact`, `/about`, `/team`, `/people`, `/staff`,
+`/leadership`, `/directory`, `/employees`, `/impressum` (depth 1). Sub-page
+fetches run in parallel with the main scan and share the de-dup set so
+each email appears once regardless of which page surfaced it.
 
 ### What the CLI does (and doesn't) include
 
@@ -469,8 +496,12 @@ without Node installed.
   confidence scoring.
 - Reuses the same built-in footprint list as the extension (LinkedIn,
   Apollo, ZoomInfo, Crunchbase, RocketReach, Lusha, Hunter.io, Clearbit,
-  SignalHire, AngelList, GitHub, plus 900+ role/industry footprints).
+  SignalHire, AngelList, GitHub, 70 country footprints, 20 global-industry
+  footprints, plus 900+ role/industry footprints — **1019 total**).
 - Configurable parallel-fetch concurrency for deep-scan.
+- Country-targeted queries via `--country` (popup: dropdown + "Restrict to
+  TLD" checkbox).
+- Deep-DB sub-page following via `--follow-contact`.
 - Native MX validation via Node DNS (no DoH round-trip required).
 - The browser extension remains fully functional and unchanged — adding
   `package.json` and the `cli/` directory has no effect on the Manifest V3

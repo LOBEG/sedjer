@@ -2,6 +2,34 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.2.0] - 2026-05-02
+
+### 🌍 Global Coverage, Country Targeting & Deeper DB Scan
+
+#### Country targeting (new feature)
+- **70 country footprints** added to `background/api.js` — each entry generates 5 site-TLD-restricted queries that pull decision-maker contacts from local company sites + the major B2B platforms (LinkedIn / Apollo / RocketReach / Hunter / Crunchbase / ZoomInfo). Coverage:
+  - Americas: US, CA, BR, MX, AR, CL, CO, PE, VE, UY
+  - Europe (full EU + non-EU): UK/IE, DE, FR, ES, IT, NL, BE, CH, AT, SE, NO, DK, FI, IS, PT, GR, PL, CZ, SK, HU, RO, BG, HR, SI, RS, EE, LV, LT, RU, UA, BY
+  - Asia-Pacific: IN, SG, HK, MY, ID, TH, PH, VN, JP, KR, CN, TW, AU, NZ
+  - Middle East & Africa: AE, SA, QA, KW, BH, OM, IL, TR, EG, MA, ZA, NG, KE, GH
+- **Popup country dropdown** (`#country-select`) with all 70 countries + a "Restrict to TLD" checkbox. When set, every query the extension fires gets a `site:.<tld>` prefix. Persisted via `chrome.storage.local.country` and `chrome.storage.local.countryRestrictTld`. Defaults to "Any country / Global" so existing users see no behaviour change.
+- **CLI: `--country CC`** flag on `search` / `footprint` (ISO 3166-1 alpha-2). Unknown codes log a warning and continue without filtering. Backed by `COUNTRY_TLDS` map mirrored 1:1 between extension and CLI to keep behaviour consistent.
+
+#### Global industries
+- **20 globally-flavoured industry footprints** complementing the existing 119 SOC + 21+ tech-focused industry blocks: Telecommunications, Logistics & Supply Chain, Insurance, Real Estate & PropTech, Hospitality & Tourism, Construction & Infrastructure, Mining & Metals, Oil/Gas & Energy, Renewable Energy, Agriculture & Agritech, Pharma & Life Sciences, Healthcare Providers, Education & EdTech, Government & Public Sector, NGOs, Media & Publishing, Banking & Capital Markets, Retail & Consumer Goods, Automotive & Mobility, Aviation & Airlines.
+
+#### Deep DB extraction
+- **`--follow-contact`** flag on CLI `extract` and `search`. After fetching a result page, also fetches a fixed set of well-known contact-related sub-paths at depth 1: `/contact`, `/contact-us`, `/about`, `/about-us`, `/team`, `/our-team`, `/people`, `/staff`, `/leadership`, `/management`, `/directory`, `/employees`, `/impressum`. Sub-page fetches run with concurrency 3-4 and a 15s timeout each, sharing the de-dup set with the main page so emails appear once regardless of which page surfaces them.
+
+#### Robustness fixes
+- CLI footprint loader now strips `//` line comments and `/* */` block comments before bracket-balanced parsing of `_builtinFootprints`. Previously an apostrophe inside a JS comment would put the loader into a phantom string state and break parsing.
+
+#### Compatibility
+- Total built-in footprint count: 919 → 1019 (+100 additive entries).
+- All existing footprints, regex patterns, message events, storage keys, and APIs are unchanged.
+- Browser extension: Manifest V3 bundle still loads identically — only `popup/popup.html` and `popup/query.js` were extended (additive new row + new functions), with all changes guarded by `$('#country-select').length` so they no-op cleanly if the new UI elements aren't present.
+- Standalone executable build path (`npm run build:exe`) is unchanged.
+
 ## [4.1.0] - 2026-05-02
 
 ### 🚀 Extended Coverage & Standalone Executable

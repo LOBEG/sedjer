@@ -40,6 +40,16 @@ if (!EmailExtractor) {
     process.exit(2);
 }
 
+// Resolve the package version once so banners, --version, and the
+// User-Agent header all stay in sync with package.json.
+var PARIS_VERSION = (function () {
+    try {
+        return require(path.join(__dirname, '..', 'package.json')).version || '0.0.0';
+    } catch (e) {
+        return '0.0.0';
+    }
+})();
+
 // ── Built-in footprints ─────────────────────────────────────────────────────
 // We can't `require` background/api.js directly (Chrome-extension globals).
 // Strip the leading IIFE and pull out _builtinFootprints by evaluating only
@@ -52,19 +62,28 @@ var BUILTIN_FOOTPRINTS = (function loadFootprints() {
         var openBracket = src.indexOf('[', start);
         if (openBracket < 0) return [];
 
-        // Walk forward, counting brackets, ignoring string contents.
+        // Walk forward, counting brackets, ignoring string and comment contents.
         var i = openBracket;
         var depth = 0;
-        var inStr = null;
+        var inStr = null;       // '"' / "'" / "`" while inside a string
         var esc = false;
+        var inLine = false;     // inside `// …` line comment
+        var inBlock = false;    // inside `/* … */` block comment
         while (i < src.length) {
             var ch = src[i];
+            var nx = src[i + 1];
             if (inStr) {
                 if (esc) { esc = false; }
                 else if (ch === '\\') { esc = true; }
                 else if (ch === inStr) { inStr = null; }
+            } else if (inLine) {
+                if (ch === '\n') inLine = false;
+            } else if (inBlock) {
+                if (ch === '*' && nx === '/') { inBlock = false; i++; }
             } else {
-                if (ch === '"' || ch === "'") { inStr = ch; }
+                if (ch === '/' && nx === '/') { inLine = true; i++; }
+                else if (ch === '/' && nx === '*') { inBlock = true; i++; }
+                else if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; }
                 else if (ch === '[') { depth++; }
                 else if (ch === ']') { depth--; if (depth === 0) { i++; break; } }
             }
@@ -99,7 +118,7 @@ function fetchUrl(target, opts) {
             path: parsed.path,
             method: 'GET',
             headers: Object.assign({
-                'User-Agent': 'Mozilla/5.0 (compatible; Paris Email Extractor/4.0; +https://github.com/LOBEG/sedjer)',
+                'User-Agent': 'Mozilla/5.0 (compatible; Paris Email Extractor/' + PARIS_VERSION + '; +https://github.com/LOBEG/sedjer)',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8',
                 'Accept-Encoding': 'gzip, deflate',
                 'Accept-Language': 'en-US,en;q=0.9'
@@ -340,7 +359,92 @@ function writeOutput(text, outFile) {
     }
 }
 
-// ── Argument parsing ────────────────────────────────────────────────────────
+// ── Country → TLD map (ISO 3166-1 alpha-2 → primary ccTLD list) ────────────
+// Used by the `--country` flag on `search` / `footprint` to inject a
+// `site:.<tld>` filter into queries so results are restricted to that
+// country's web. Codes are case-insensitive.
+var COUNTRY_TLDS = {
+    US: ['us', 'com'], GB: ['uk', 'co.uk'], UK: ['uk', 'co.uk'], CA: ['ca'],
+    AU: ['au', 'com.au'], NZ: ['nz', 'co.nz'], IE: ['ie'],
+    IN: ['in', 'co.in'], SG: ['sg', 'com.sg'], HK: ['hk', 'com.hk'],
+    MY: ['my', 'com.my'], ID: ['id', 'co.id'], TH: ['th', 'co.th'],
+    PH: ['ph', 'com.ph'], VN: ['vn', 'com.vn'],
+    JP: ['jp', 'co.jp'], KR: ['kr', 'co.kr'], CN: ['cn', 'com.cn'],
+    TW: ['tw', 'com.tw'],
+    AE: ['ae', 'com.ae'], SA: ['sa', 'com.sa'], QA: ['qa', 'com.qa'],
+    KW: ['kw', 'com.kw'], BH: ['bh', 'com.bh'], OM: ['om', 'com.om'],
+    IL: ['il', 'co.il'], TR: ['tr', 'com.tr'],
+    EG: ['eg', 'com.eg'], MA: ['ma', 'co.ma'], ZA: ['za', 'co.za'],
+    NG: ['ng', 'com.ng'], KE: ['ke', 'co.ke'], GH: ['gh', 'com.gh'],
+    DE: ['de'], FR: ['fr'], ES: ['es'], IT: ['it'], NL: ['nl'], BE: ['be'],
+    CH: ['ch'], AT: ['at'], SE: ['se'], NO: ['no'], DK: ['dk'], FI: ['fi'],
+    IS: ['is'], PT: ['pt'], GR: ['gr'], PL: ['pl'], CZ: ['cz'], SK: ['sk'],
+    HU: ['hu'], RO: ['ro'], BG: ['bg'], HR: ['hr'], SI: ['si'], RS: ['rs'],
+    EE: ['ee'], LV: ['lv'], LT: ['lt'],
+    RU: ['ru'], UA: ['ua'], BY: ['by'],
+    BR: ['br', 'com.br'], MX: ['mx', 'com.mx'], AR: ['ar', 'com.ar'],
+    CL: ['cl'], CO: ['co', 'com.co'], PE: ['pe', 'com.pe'],
+    VE: ['ve', 'com.ve'], UY: ['uy', 'com.uy']
+};
+
+function countryFilter(code) {
+    if (!code) return null;
+    var c = String(code).toUpperCase().replace(/[^A-Z]/g, '');
+    var tlds = COUNTRY_TLDS[c];
+    if (!tlds || !tlds.length) return null;
+    if (tlds.length === 1) return 'site:.' + tlds[0];
+    return '(' + tlds.map(function (t) { return 'site:.' + t; }).join(' OR ') + ')';
+}
+
+function applyCountryFilter(query, code) {
+    var f = countryFilter(code);
+    if (!f) return query;
+    // Skip if the query already restricts to one of this country's TLDs
+    // anywhere in the line, so we don't produce redundant filters like
+    // `(site:.us OR site:.com) site:.us "@" foo`.
+    var c = String(code).toUpperCase().replace(/[^A-Z]/g, '');
+    var tlds = COUNTRY_TLDS[c] || [];
+    for (var i = 0; i < tlds.length; i++) {
+        if (query.indexOf('site:.' + tlds[i]) !== -1) return query;
+    }
+    // Prepend so it's applied first; existing site: operators still work.
+    return f + ' ' + query;
+}
+
+// ── Sub-page following for "deep DB" extraction ────────────────────────────
+// After fetching a page, also fetch a small set of well-known contact-related
+// sub-paths (depth 1) so we pick up emails that live one click away from the
+// landing page. This is the "deep into database" mode requested by users.
+var CONTACT_SUBPATHS = [
+    '/contact', '/contact-us', '/contact_us',
+    '/about', '/about-us', '/about_us',
+    '/team', '/our-team', '/people', '/staff',
+    '/leadership', '/management', '/directory', '/employees',
+    '/impressum'   // German legal-imprint pages typically list emails
+];
+
+function followContactSubpages(baseUrl, opts) {
+    opts = opts || {};
+    var concurrency = opts.concurrency || 4;
+    var timeoutMs   = opts.timeoutMs   || 15000;
+    var origin;
+    try {
+        var u = url.parse(baseUrl);
+        if (!u.protocol || !u.hostname) return Promise.resolve([]);
+        origin = u.protocol + '//' + u.host;
+    } catch (e) { return Promise.resolve([]); }
+    var targets = CONTACT_SUBPATHS.map(function (p) { return origin + p; });
+    return pMap(targets, concurrency, function (t) {
+        return fetchUrl(t, { timeoutMs: timeoutMs })
+            .then(function (resp) { return { url: t, html: resp.body }; })
+            .catch(function () { return null; });
+    }).then(function (results) {
+        return results.map(function (r) { return r && r.ok ? r.value : null; })
+                      .filter(function (r) { return r && r.html; });
+    });
+}
+
+
 function parseArgs(argv) {
     var pos = [];
     var flags = {};
@@ -365,7 +469,7 @@ function parseArgs(argv) {
 function cmdExtract(args) {
     var target = args.pos[0];
     if (!target) {
-        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D]');
+        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--follow-contact]');
         process.exit(1);
     }
     var fmt   = args.flags.format || 'txt';
@@ -376,6 +480,7 @@ function cmdExtract(args) {
         excludeRoles:  !args.flags['include-roles']
     };
     if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
+    var followContact = !!args.flags['follow-contact'];
 
     var loader;
     if (/^https?:\/\//i.test(target)) {
@@ -384,9 +489,25 @@ function cmdExtract(args) {
         loader = Promise.resolve({ html: fs.readFileSync(target, 'utf8'), src: null });
     }
     return loader.then(function (page) {
-        var records = extractFromHtml(page.html, page.src, filterOpts).map(function (r) {
-            return { email: r.email, source: r.source, confidence: r.confidence, sourceUrl: page.src };
-        });
+        var records = [];
+        var seen = {};
+        function ingest(html, srcUrl) {
+            extractFromHtml(html, srcUrl, filterOpts).forEach(function (r) {
+                if (seen[r.email]) return;
+                seen[r.email] = true;
+                records.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
+            });
+        }
+        ingest(page.html, page.src);
+
+        // "Deep DB" mode: also fetch /contact, /about, /team, etc.
+        if (followContact && page.src) {
+            return followContactSubpages(page.src).then(function (pages) {
+                pages.forEach(function (p) { ingest(p.html, p.url); });
+                process.stderr.write('Found ' + records.length + ' email(s) (incl. ' + pages.length + ' sub-page[s])\n');
+                writeOutput(formatOutput(records, fmt), out);
+            });
+        }
         process.stderr.write('Found ' + records.length + ' email(s)\n');
         writeOutput(formatOutput(records, fmt), out);
     });
@@ -395,7 +516,7 @@ function cmdExtract(args) {
 function cmdSearch(args) {
     var query = args.pos.join(' ');
     if (!query) {
-        console.error('usage: paris search "<query>" [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--mx]');
+        console.error('usage: paris search "<query>" [--country CC] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--mx] [--follow-contact]');
         process.exit(1);
     }
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
@@ -408,20 +529,37 @@ function cmdSearch(args) {
         excludeRoles:  !args.flags['include-roles']
     };
     if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
+    var followContact = !!args.flags['follow-contact'];
+
+    if (args.flags.country) {
+        var f = countryFilter(args.flags.country);
+        if (f) {
+            query = applyCountryFilter(query, args.flags.country);
+            process.stderr.write('Country filter: ' + f + '\n');
+        } else {
+            process.stderr.write('Warning: unknown country code "' + args.flags.country + '" — ignored\n');
+        }
+    }
 
     process.stderr.write('Searching DuckDuckGo for: ' + query + '\n');
     return ddgSearchUrls(query, maxPages).then(function (urls) {
-        process.stderr.write('  ' + urls.length + ' result URL(s) discovered. Deep-scanning with concurrency=' + concurrency + '\n');
+        process.stderr.write('  ' + urls.length + ' result URL(s) discovered. Deep-scanning with concurrency=' + concurrency + (followContact ? ' (follow-contact ON)' : '') + '\n');
         var allRecords = [];
         var seen = {};
+        function ingest(html, srcUrl) {
+            extractFromHtml(html, srcUrl, filterOpts).forEach(function (r) {
+                if (seen[r.email]) return;
+                seen[r.email] = true;
+                allRecords.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
+            });
+        }
         return pMap(urls, concurrency, function (u) {
             return fetchUrl(u, { timeoutMs: 20000 })
                 .then(function (resp) {
-                    var recs = extractFromHtml(resp.body, u, filterOpts);
-                    recs.forEach(function (r) {
-                        if (seen[r.email]) return;
-                        seen[r.email] = true;
-                        allRecords.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: u });
+                    ingest(resp.body, u);
+                    if (!followContact) return null;
+                    return followContactSubpages(u, { concurrency: 3 }).then(function (subs) {
+                        subs.forEach(function (s) { ingest(s.html, s.url); });
                     });
                 })
                 .catch(function (err) {
@@ -497,16 +635,28 @@ function runSearchInternal(args) {
         excludeRoles:  !args.flags['include-roles']
     };
     if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
+    if (args.flags.country) {
+        var f = countryFilter(args.flags.country);
+        if (f) query = applyCountryFilter(query, args.flags.country);
+    }
+    var followContact = !!args.flags['follow-contact'];
     return ddgSearchUrls(query, maxPages).then(function (urls) {
         var seen = {};
         var records = [];
+        function ingest(html, srcUrl) {
+            extractFromHtml(html, srcUrl, filterOpts).forEach(function (r) {
+                if (seen[r.email]) return;
+                seen[r.email] = true;
+                records.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
+            });
+        }
         return pMap(urls, concurrency, function (u) {
             return fetchUrl(u, { timeoutMs: 20000 })
                 .then(function (resp) {
-                    extractFromHtml(resp.body, u, filterOpts).forEach(function (r) {
-                        if (seen[r.email]) return;
-                        seen[r.email] = true;
-                        records.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: u });
+                    ingest(resp.body, u);
+                    if (!followContact) return null;
+                    return followContactSubpages(u, { concurrency: 3 }).then(function (subs) {
+                        subs.forEach(function (s) { ingest(s.html, s.url); });
                     });
                 })
                 .catch(function () { /* swallow per-url failures */ });
@@ -585,12 +735,17 @@ function help() {
         '  --include-roles         Keep role-based addresses (info@, sales@…)',
         '  --min-confidence N      Drop emails below this confidence (default: 30)',
         '  --domain D              Restrict results to a specific domain',
+        '  --country CC            Restrict to a country\'s ccTLD (ISO 3166-1 alpha-2,',
+        '                          e.g. US, GB, DE, FR, BR, IN, JP, AE, ZA …)',
+        '  --follow-contact        Deep-DB mode: also fetch each result\'s /contact,',
+        '                          /about, /team, /people, /staff, /leadership pages',
         '  --mx                    MX-validate every result before output',
         '',
         'EXAMPLES',
-        '  paris extract https://example.com',
-        '  paris search "site:linkedin.com/in/ \\"@acme.com\\"" --max-pages 3 --mx',
-        '  paris footprint "Apollo.io" --max-pages 2 --format csv --out leads.csv',
+        '  paris extract https://example.com --follow-contact',
+        '  paris search "site:linkedin.com/in/ \\"@acme.com\\"" --country GB --mx',
+        '  paris footprint "Apollo.io" --country DE --max-pages 3 --format csv --out leads.csv',
+        '  paris footprint "Country: Germany"',
         '  paris permute Jane Doe acme.com --mx',
         '  paris mx jane.doe@acme.com info@acme.com',
         ''
@@ -616,7 +771,7 @@ function main() {
         case 'mx':              exec = cmdMx(args); break;
         case '--version':
         case 'version':
-            process.stdout.write('Paris Email Extractor CLI 4.0.0\n');
+            process.stdout.write('Paris Email Extractor CLI ' + PARIS_VERSION + '\n');
             return;
         default:
             console.error('Unknown command: ' + cmd);
