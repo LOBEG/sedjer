@@ -364,7 +364,7 @@
         });
 
         // 4. LinkedIn-specific patterns
-        if (options.isLinkedIn || text.indexOf('linkedin.com') > -1) {
+        if (options.isLinkedIn) {
             LINKEDIN_PATTERNS.forEach(function(pattern) {
                 pattern.lastIndex = 0;
                 while ((match = pattern.exec(text)) !== null) {
@@ -378,7 +378,7 @@
         }
 
         // 5. Data platform patterns (Apollo, ZoomInfo, etc.)
-        if (options.isDataPlatform || text.indexOf('apollo.io') > -1 || text.indexOf('zoominfo.com') > -1) {
+        if (options.isDataPlatform) {
             DATA_PLATFORM_PATTERNS.forEach(function(pattern) {
                 pattern.lastIndex = 0;
                 while ((match = pattern.exec(text)) !== null) {
