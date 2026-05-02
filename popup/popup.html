@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf8" />
+        <title>Serpdigger</title>
+        <link href="../includes/bootstrap.css" rel="stylesheet" />
+        <script src="../includes/jquery.js"></script>
+        <script src="../includes/logs.js"></script>
+        <script src="../includes/bootstrap.js"></script>
+        <script src="popup.js"></script>
+        <script src="login.js"></script>
+        <script src="footprints.js"></script>
+        <script src="email-filter.js"></script>
+        <script src="query.js"></script>
+        <script src="runner.js"></script>
+        <style>
+            body {
+                width: 780px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="row" style="padding-top: 15px; padding-bottom: 15px;">
+                <div class="col-sm-3 text-center" style="padding: 10px 0;">
+                    <p class="text-info">
+                        Serpdigger.com 
+                        <span class="text-primary">
+                            VER <span id="version"></span>
+                        </span>
+                    </p>
+                </div>
+       
+                <div class="col-sm-3 text-center">
+                    <span class="text-info">By: </span>
+                    <a href="http://www.serpdigger.com/yossi" target="_blank">Yossi Bezalel</a>
+                </div>
+                <div class="col-sm-3 text-center" style="padding: 10px 0;">
+                    <span id="checking-account" style="display: none;" class="text-warning">Checking account...</span>
+                    <span class="activated" style="display: none; color: green;">&#10003; Activated</span>
+                    <span class="trial" style="display: none; color: orange;">Trial Account</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-sm-4">
+                    <div class="form-group">
+                        <label for="search-engine-select" style="line-height: 32px;">Search Engine</label>
+                    </div>
+                </div>
+                <div class="col-sm-8">
+                    <div class="form-group">
+                        <select class="form-control" id="search-engine-select">
+                            <option value="cse" selected>Google CSE (Custom Search)</option>
+                            <option value="google">Google Web Search</option>
+                            <option value="bing">Bing Search</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="row" id="cse-row">
+                <div class="col-sm-4">
+                    <div class="form-group">
+                        <label for="cse-address-input" style="line-height: 32px;">Insert Your CSE Main Address</label>
+                    </div>
+                </div>
+                <div class="col-sm-8">
+                    <div class="form-group">
+                        <input class="form-control" id="cse-address-input" placeholder="https://cse.google.com/">
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-sm-6">
+                    <div class="form-group">
+                        <label for="footprints-input">Site footprint</label>
+                        <select class="form-control" id="footprint-select" style="margin-bottom: 5px;">
+                            <option value="custom">Custom</option>
+                        </select>
+                        <textarea style="resize: none;" rows="3" class="form-control" id="footprint-input"></textarea>
+                    </div>
+                </div>
+                <div class="col-sm-3">
+                    <div class="form-group">
+                        <label for="pattern-input">@ Patterns</label>
+                        <select class="form-control" id="email-type-select" style="margin-bottom: 5px;">
+                            <option value="custom">Custom</option>
+                            <optgroup label="── ISP / Webmail ──">
+                                <option value="isp-all">All ISP / Webmail</option>
+                                <option value="isp-gmail">Gmail</option>
+                                <option value="isp-yahoo">Yahoo</option>
+                                <option value="isp-outlook">Outlook</option>
+                                <option value="isp-hotmail">Hotmail</option>
+                                <option value="isp-aol">AOL</option>
+                                <option value="isp-icloud">iCloud</option>
+                                <option value="isp-protonmail">ProtonMail</option>
+                            </optgroup>
+                            <optgroup label="── US ISP ──">
+                                <option value="isp-comcast">Comcast / Xfinity</option>
+                                <option value="isp-bellsouth">BellSouth</option>
+                                <option value="isp-att">AT&amp;T</option>
+                                <option value="isp-verizon">Verizon</option>
+                                <option value="isp-cox">Cox</option>
+                                <option value="isp-spectrum">Charter / Spectrum</option>
+                                <option value="isp-centurylink">CenturyLink</option>
+                                <option value="isp-frontier">Frontier</option>
+                                <option value="isp-earthlink">EarthLink</option>
+                                <option value="isp-windstream">Windstream</option>
+                            </optgroup>
+                            <optgroup label="── Business Emails ──">
+                                <option value="biz-all">Business (exclude ISP)</option>
+                                <option value="biz-o365">Office 365 / Microsoft 365</option>
+                                <option value="biz-gws">Google Workspace</option>
+                                <option value="biz-custom-domain">Custom Domain (all B2B)</option>
+                                <option value="biz-edu">Education (.edu)</option>
+                                <option value="biz-gov">Government (.gov)</option>
+                            </optgroup>
+                        </select>
+                        <textarea style="resize: none;" class="form-control" rows="3" id="pattern-input"></textarea>
+                    </div>
+                </div>
+                <div class="col-sm-3">
+                    <div class="form-group">
+                        <label for="location-input">Location</label>
+                        <textarea style="resize: none;" class="form-control" rows="3" id="location-input"></textarea>
+                        <div class="checkbox" style="margin-top: 5px;">
+                            <label>
+                                <input type="checkbox" checked id="location-exact-match-checkbox">
+                                <small>Exact match</small>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-sm-6">
+                    <div class="form-group">
+                        <label for="term2-input">Secondary Terms</label>
+                        <textarea style="resize: none;" class="form-control" rows="2" id="term2-input"></textarea>
+                        <div class="checkbox" style="margin-top: 5px;">
+                            <label>
+                                <input type="checkbox" checked id="term2-exact-match-checkbox">
+                                <small>Exact match</small>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row text-center" id="runner-status" style="display: none; padding-bottom: 10px;">
+                <h4>Now running : <span class="text-primary" id="current-query-string"></span></h4>
+            </div>
+            <div class="row" style="padding-bottom: 20px;">
+                <div class="col-sm-5">
+                    <p>
+                        <h3>
+                            <span class="text-muted">Collected : </span><span class="text-primary"><span id="collected-emails">0</span> emails</span>
+                        </h3>
+                        <h3 id="progress-running">
+                            <span class="text-muted">Progress : </span><span class="text-primary"><span id="current-query">0</span>/<span id="total-queries">0</span> queries</span>
+                        </h3>
+                        <h3 id="progress-complete-indicator">
+                            <span class="text-muted">Progress : </span><span class="text-success">Complete</span>
+                        </h3>
+                        <h3 id="progress-stopped-indicator">
+                            <span class="text-muted">Progress : </span><span class="text-danger">Stopped</span>
+                        </h3>
+                    </p>
+                </div>
+                <div class="col-sm-6">
+                    <div style="padding-top: 30px;">
+                        <div class="row">
+                            <div class="col-sm-4 text-center" style="padding: 0 5px;">
+                                <button class="btn btn-primary btn-lg btn-block" id="toggle">START</button>
+                            </div>
+                            <div class="col-sm-4 text-center" style="padding: 0 5px;">
+                                <button class="btn btn-primary btn-lg btn-block" id="download">DOWNLOAD</button>
+                            </div>
+                            <div class="col-sm-4 text-center" style="padding: 0 5px;">
+                                <button class="btn btn-info btn-lg btn-block" id="mx-validate-btn" disabled>MX CHECK</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row" id="mx-results-panel" style="display: none; padding-bottom: 10px;">
+                <div class="col-sm-12">
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <strong>MX Validation Results</strong>
+                            <span id="mx-progress-text" class="text-muted pull-right"></span>
+                        </div>
+                        <div class="panel-body">
+                            <div class="row">
+                                <div class="col-sm-4">
+                                    <h4><span class="text-success" id="mx-valid-count">0</span> <small>Valid (has MX)</small></h4>
+                                </div>
+                                <div class="col-sm-4">
+                                    <h4><span class="text-danger" id="mx-invalid-count">0</span> <small>Invalid (no MX)</small></h4>
+                                </div>
+                                <div class="col-sm-4">
+                                    <div class="btn-group btn-group-sm">
+                                        <button class="btn btn-success" id="download-valid" disabled>Download Valid</button>
+                                        <button class="btn btn-danger" id="download-invalid" disabled>Download Invalid</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row" style="padding-bottom: 10px;">
+                <div class="container-fluid">
+                    <div class="row">
+                        <div class="col-sm-6">
+                            <div class="form-group">
+                                <label for="delayInput" style="padding-top: 5px;" class="col-sm-8 control-label">Delay b/w queries(0...99 secs)</label>
+                                <div class="col-sm-4">
+                                    <input type="number" min="0" max="99" class="form-control" id="delayInput">
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top: 10px;">
+                                <label for="maxPagesInput" style="padding-top: 5px;" class="col-sm-8 control-label">Pages per query (1-100)</label>
+                                <div class="col-sm-4">
+                                    <input type="number" min="1" max="100" class="form-control" id="maxPagesInput" value="10">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-sm-4">
+                            <div class="checkbox" style="margin-bottom: -5px;">
+                                <label>
+                                    <input type="checkbox" checked id="removeDuplicates">
+                                    <b>Remove duplicates</b>
+                                </label>
+                            </div>
+                            <div class="checkbox" style="margin-bottom: -5px;">
+                                <label>
+                                    <input type="checkbox" checked id="deepScan">
+                                    <b>Deep Scan pages</b>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-sm-2">
+                            <a class="btn btn-default" href="http://www.serpdigger.com/help" target="_blank">Help?</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+         
+        </div>
+        <div class="modal fade" id="login-modal" tabindex="-1" role="dialog">
+            <div class="modal-dialog" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                        <h4 class="modal-title">Hi there. Please login.</h4>
+                    </div>
+                    <div class="modal-body">
+                        <p>
+                            Welcome to <span class="text-primary">Serpdigger</span>. To get started, enter your <b>username</b> and <b>password</b> below.
+                        </p>
+                        <form class="form-horizontal" id="login-form">
+                            <div class="form-group">
+                                <label for="inputUsername" class="col-sm-2 control-label">Username</label>
+                                <div class="col-sm-10">
+                                    <input type="text" class="form-control" id="inputUsername" placeholder="Enter your username">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="inputPassword" class="col-sm-2 control-label">Password</label>
+                                <div class="col-sm-10">
+                                    <input type="password" class="form-control" id="inputPassword" placeholder="Enter your password">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <div class="col-sm-offset-2 col-sm-10">
+                                <div class="checkbox">
+                                    <label>
+                                        <input type="checkbox" id="inputRememberMe" checked="checked"> Remember me
+                                    </label>
+                                </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <div class="col-sm-offset-2 col-sm-10">
+                                    <button id="login" class="btn btn-default">Login</button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>
