@@ -4,7 +4,8 @@
 
 
 var $body = $(document.body);
-var EMAIL_REGEXP = /[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*\s{0,2}@\s{0,2}(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\s{0,2}\.\s{0,2})+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?/gi;
+// Enhanced email extraction using the new EmailExtractor module
+var EMAIL_REGEXP = /[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+)*@((?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})/gi;
 var runner;
 var newPage = 2;
 var log = new Log('duckduckgo');
@@ -188,14 +189,26 @@ Runner.prototype.extract = function () {
 
     var resultUrls = [];
     var isCSE = $('.gsc-result').length > 0;
+    
+    // Detect platform for enhanced extraction
+    var platformInfo = window.EmailExtractor ? window.EmailExtractor.detectPlatform(window.location.href) : { platform: 'generic' };
 
     if (isCSE) {
         // Google CSE: extract from full result text (not just snippet)
         $('.gsc-result').each(function () {
             var $this = $(this);
             var allText = $this.text();
-            var emails = (allText.match(EMAIL_REGEXP) || []);
-            _runner._collectEmails(emails);
+            
+            // Use enhanced email extractor if available
+            if (window.EmailExtractor) {
+                var extractedEmails = window.EmailExtractor.extractEmails(allText, platformInfo);
+                var emailStrings = extractedEmails.map(function(e) { return e.email; });
+                _runner._collectEmails(emailStrings);
+            } else {
+                // Fallback to regex
+                var emails = (allText.match(EMAIL_REGEXP) || []);
+                _runner._collectEmails(emails);
+            }
 
             // Collect result link URLs for deep page scanning
             $this.find('a.gs-title, a[data-ctorig]').each(function() {
@@ -218,8 +231,18 @@ Runner.prototype.extract = function () {
 
         $containers.each(function () {
             var $el = $(this);
-            var emails = ($el.text().match(EMAIL_REGEXP) || []);
-            _runner._collectEmails(emails);
+            var text = $el.text();
+            
+            // Use enhanced email extractor if available
+            if (window.EmailExtractor) {
+                var extractedEmails = window.EmailExtractor.extractEmails(text, platformInfo);
+                var emailStrings = extractedEmails.map(function(e) { return e.email; });
+                _runner._collectEmails(emailStrings);
+            } else {
+                // Fallback to regex
+                var emails = (text.match(EMAIL_REGEXP) || []);
+                _runner._collectEmails(emails);
+            }
 
             $el.find('a[href^="http"]').each(function() {
                 var href = $(this).attr('href');

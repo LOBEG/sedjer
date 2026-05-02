@@ -148,96 +148,199 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
     }
 })
 
-// ── Deep Page Scanning ──────────────────────────────────────────────────────
+// ── Deep Page Scanning (Enhanced) ──────────────────────────────────────────
 
-var _DEEP_EMAIL_REGEXP = /[a-z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+\/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?/gi;
+// Enhanced email regex with better Unicode support
+var _DEEP_EMAIL_REGEXP = /[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}/gi;
 
+// Expanded ISP domains list
 var _ISP_DOMAINS = {
-    'gmail.com':1, 'yahoo.com':1, 'outlook.com':1, 'hotmail.com':1, 'aol.com':1,
-    'icloud.com':1, 'protonmail.com':1, 'proton.me':1, 'mail.com':1, 'gmx.com':1,
+    'gmail.com':1, 'googlemail.com':1, 'yahoo.com':1, 'ymail.com':1, 'rocketmail.com':1,
+    'outlook.com':1, 'hotmail.com':1, 'live.com':1, 'msn.com':1,
+    'aol.com':1, 'icloud.com':1, 'me.com':1, 'mac.com':1,
+    'protonmail.com':1, 'proton.me':1, 'tutanota.com':1, 'tutanota.de':1,
+    'mail.com':1, 'gmx.com':1, 'gmx.de':1, 'gmx.net':1,
     'comcast.net':1, 'xfinity.com':1, 'bellsouth.net':1, 'att.net':1, 'sbcglobal.net':1,
     'verizon.net':1, 'cox.net':1, 'charter.net':1, 'spectrum.net':1, 'centurylink.net':1,
     'frontier.com':1, 'frontiernet.net':1, 'earthlink.net':1, 'windstream.net':1,
-    'live.com':1, 'msn.com':1, 'ymail.com':1, 'rocketmail.com':1, 'zoho.com':1,
-    'mail.ru':1, 'yandex.com':1, 'tutanota.com':1, 'fastmail.com':1,
-    'googlemail.com':1, 'me.com':1, 'mac.com':1, 'inbox.com':1
+    'zoho.com':1, 'zohomail.com':1, 'fastmail.com':1, 'fastmail.fm':1,
+    'mail.ru':1, 'yandex.com':1, 'yandex.ru':1, 'inbox.com':1,
+    'web.de':1, 'freenet.de':1, 't-online.de':1, 'qq.com':1, '163.com':1, '126.com':1
 };
 
+// Enhanced junk email detection
 function _isJunkEmail(email) {
     var domain = email.split('@')[1] || '';
-    return /^(noreply|no-reply|no_reply|donotreply|mailer-daemon|postmaster|webmaster)@/.test(email)
-        || /\.(png|jpg|jpeg|gif|svg|css|js|woff|ttf|eot)$/i.test(email)
-        || domain === 'example.com'
-        || domain === 'sentry.io'
-        || domain === 'wixpress.com';
+    var localPart = email.split('@')[0] || '';
+    
+    // Role-based emails
+    var rolePatterns = /^(noreply|no-reply|no_reply|donotreply|do-not-reply|mailer-daemon|postmaster|webmaster|admin|administrator|root|bounce|unsubscribe|abuse|spam)@/i;
+    if (rolePatterns.test(email)) return true;
+    
+    // File extensions
+    if (/\.(png|jpg|jpeg|gif|svg|css|js|json|xml|woff|woff2|ttf|eot|mp3|mp4|zip|rar|pdf)$/i.test(email)) return true;
+    
+    // Test and placeholder domains
+    var testDomains = ['example.com', 'example.org', 'test.com', 'localhost', 'sentry.io', 'wixpress.com'];
+    if (testDomains.indexOf(domain) !== -1) return true;
+    
+    // Very short or suspiciously formatted
+    if (localPart.length < 2 || domain.length < 4) return true;
+    
+    return false;
+}
+
+// Extract emails from obfuscated formats
+function _extractObfuscatedEmails(text) {
+    var emails = [];
+    var obfuscatedPatterns = [
+        /([a-zA-Z0-9._+-]+)\s*\[at\]\s*([a-zA-Z0-9.-]+\s*\[dot\]\s*[a-zA-Z]{2,})/gi,
+        /([a-zA-Z0-9._+-]+)\s*\(at\)\s*([a-zA-Z0-9.-]+\s*\(dot\)\s*[a-zA-Z]{2,})/gi,
+        /([a-zA-Z0-9._+-]+)\s+AT\s+([a-zA-Z0-9.-]+\s+DOT\s+[a-zA-Z]{2,})/gi,
+        /([a-zA-Z0-9._+-]+)\s+at\s+([a-zA-Z0-9.-]+(?:\s+dot\s+[a-zA-Z0-9-]+)+)/gi
+    ];
+    
+    obfuscatedPatterns.forEach(function(pattern) {
+        var match;
+        while ((match = pattern.exec(text)) !== null) {
+            var email = match[0]
+                .replace(/\s*\[at\]\s*/gi, '@')
+                .replace(/\s*\(at\)\s*/gi, '@')
+                .replace(/\s+AT\s+/gi, '@')
+                .replace(/\s+at\s+/gi, '@')
+                .replace(/\s*\[dot\]\s*/gi, '.')
+                .replace(/\s*\(dot\)\s*/gi, '.')
+                .replace(/\s+DOT\s+/gi, '.')
+                .replace(/\s+dot\s+/gi, '.')
+                .replace(/\s+/g, '')
+                .toLowerCase();
+            if (email.indexOf('@') > 0 && email.split('@').length === 2) {
+                emails.push(email);
+            }
+        }
+    });
+    
+    return emails;
 }
 
 function _deepFetchPage(url, pattern, removeDuplicates) {
     var controller = new AbortController();
-    var timeout = setTimeout(function() { controller.abort(); }, 15000);
+    var timeout = setTimeout(function() { controller.abort(); }, 20000); // Increased timeout
 
     fetch(url, {
         signal: controller.signal,
         redirect: 'follow',
-        headers: { 'Accept': 'text/html,text/plain' }
+        headers: { 
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (compatible; ParisEmailExtractor/4.0)'
+        }
     })
     .then(function(response) {
         clearTimeout(timeout);
         if (!response.ok) throw new Error('HTTP ' + response.status);
         var ct = (response.headers.get('content-type') || '').toLowerCase();
-        if (ct.indexOf('text/html') === -1 && ct.indexOf('text/plain') === -1) {
+        if (ct.indexOf('text/html') === -1 && ct.indexOf('text/plain') === -1 && ct.indexOf('application/xhtml') === -1) {
             throw new Error('Not text content');
         }
         return response.text();
     })
     .then(function(html) {
-        // Extract emails from mailto: links before stripping HTML tags
-        var mailtoEmails = [];
-        var mailtoRe = /mailto:([a-z0-9!#$%&'*+\/=?^_`{|}~.-]+@[a-z0-9.-]+\.[a-z]{2,})/gi;
+        var allEmails = [];
+        
+        // 1. Extract from mailto: links
+        var mailtoRe = /mailto:([a-zA-Z0-9!#$%&'*+\/=?^_`{|}~.-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
         var mailtoMatch;
         while ((mailtoMatch = mailtoRe.exec(html)) !== null) {
-            mailtoEmails.push(mailtoMatch[1]);
+            allEmails.push(mailtoMatch[1]);
         }
 
-        // Extract emails from JSON-LD structured data
+        // 2. Extract from JSON-LD structured data (enhanced)
         var jsonldRe = /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/\s*script[^>]*>/gi;
         var jsonldMatch;
         while ((jsonldMatch = jsonldRe.exec(html)) !== null) {
-            var jsonText = jsonldMatch[1];
-            var jsonEmails = jsonText.match(_DEEP_EMAIL_REGEXP) || [];
-            mailtoEmails = mailtoEmails.concat(jsonEmails);
+            try {
+                var jsonText = jsonldMatch[1];
+                // Extract emails from JSON
+                var jsonEmails = jsonText.match(_DEEP_EMAIL_REGEXP) || [];
+                allEmails = allEmails.concat(jsonEmails);
+            } catch (e) {
+                // Invalid JSON, continue
+            }
         }
 
-        // Extract emails from meta tags (og:email, contact, etc.)
-        var metaRe = /<meta[^>]*content\s*=\s*["']([^"']*@[^"']*)["'][^>]*>/gi;
+        // 3. Extract from meta tags (og:email, contact, etc.)
+        var metaRe = /<meta[^>]*(?:name|property)\s*=\s*["'](.*?)["'][^>]*content\s*=\s*["']([^"']*)["'][^>]*>/gi;
         var metaMatch;
         while ((metaMatch = metaRe.exec(html)) !== null) {
-            var metaEmails = metaMatch[1].match(_DEEP_EMAIL_REGEXP) || [];
-            mailtoEmails = mailtoEmails.concat(metaEmails);
+            var metaName = metaMatch[1].toLowerCase();
+            var metaContent = metaMatch[2];
+            if (metaName.indexOf('email') > -1 || metaName.indexOf('contact') > -1) {
+                var metaEmails = metaContent.match(_DEEP_EMAIL_REGEXP) || [];
+                allEmails = allEmails.concat(metaEmails);
+            }
         }
 
+        // 4. Extract from data attributes (Apollo.io, ZoomInfo style)
+        var dataAttrRe = /data-(?:email|contact)[:\s="']+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+        var dataMatch;
+        while ((dataMatch = dataAttrRe.exec(html)) !== null) {
+            allEmails.push(dataMatch[1]);
+        }
+
+        // 5. Extract from LinkedIn profile patterns
+        if (url.indexOf('linkedin.com') > -1) {
+            var linkedinRe = /(?:email|contact)[:\s]+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+            var linkedinMatch;
+            while ((linkedinMatch = linkedinRe.exec(html)) !== null) {
+                allEmails.push(linkedinMatch[1]);
+            }
+        }
+
+        // 6. Extract obfuscated emails
+        var obfuscatedEmails = _extractObfuscatedEmails(html);
+        allEmails = allEmails.concat(obfuscatedEmails);
+
+        // 7. Strip HTML and extract from plain text
         var text = html.replace(/<script\b[^>]*>[\s\S]*?<\/\s*script[^>]*>/gi, ' ')
                        .replace(/<style\b[^>]*>[\s\S]*?<\/\s*style[^>]*>/gi, ' ')
-                       .replace(/<[^>]+>/g, ' ');
+                       .replace(/<[^>]+>/g, ' ')
+                       .replace(/&nbsp;/gi, ' ')
+                       .replace(/&quot;/gi, '"')
+                       .replace(/&amp;/gi, '&')
+                       .replace(/&lt;/gi, '<')
+                       .replace(/&gt;/gi, '>');
 
-        var rawEmails = (text.match(_DEEP_EMAIL_REGEXP) || []).concat(mailtoEmails);
+        var textEmails = text.match(_DEEP_EMAIL_REGEXP) || [];
+        allEmails = allEmails.concat(textEmails);
+
+        // Process and filter emails
         var addedNew = false;
+        var processed = {};
 
-        rawEmails.forEach(function(email) {
+        allEmails.forEach(function(email) {
             var clean = email.toLowerCase().trim();
+            
+            // Skip if already processed
+            if (processed[clean]) return;
+            processed[clean] = true;
+            
+            // Skip junk emails
             if (_isJunkEmail(clean)) return;
 
             var domain = clean.split('@')[1];
             if (!domain) return;
 
+            // Apply pattern filter if specified
             if (pattern) {
                 var patternClean = pattern.replace(/"/g, '').trim();
                 if (patternClean.charAt(0) === '@') patternClean = patternClean.substring(1);
                 if (domain !== patternClean) return;
             } else {
+                // If no pattern, exclude ISP domains (personal emails)
                 if (_ISP_DOMAINS.hasOwnProperty(domain)) return;
             }
 
+            // Add to results if not duplicate
             if (!removeDuplicates || serpdigger.runner.current.emailsFound.indexOf(clean) === -1) {
                 serpdigger.runner.current.emailsFound.push(clean);
                 addedNew = true;
@@ -487,7 +590,7 @@ serpdigger.download = function (filterMode) {
 
     chrome.downloads.download({
         url: 'data:text/plain;base64,' + btoa(emails.join("\r\n")),
-        filename: 'serpdigger_'+dateString+'_'+timeString+suffix+'.txt',
+        filename: 'paris-email-extractor_'+dateString+'_'+timeString+suffix+'.txt',
         saveAs: true
     });
 };

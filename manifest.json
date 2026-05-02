@@ -1,8 +1,8 @@
 {
    "manifest_version": 3,
-   "name": "Serpdigger - 1st Email Extractor",
-   "version": "3.1.0",
-   "description": "The World's First Elastic Email Scraper",
+   "name": "Paris Email Extractor",
+   "version": "4.0.0",
+   "description": "Advanced Email Discovery & Extraction Tool with Enhanced Validation",
    "background": {
       "service_worker": "background/service-worker.js"
    },
@@ -12,10 +12,10 @@
          "48": "logo/logo-48.png"
       },
       "default_popup": "popup/popup.html",
-      "default_title": "Serpdigger"
+      "default_title": "Paris Email Extractor"
    },
    "content_scripts": [ {
-      "js": [ "content/patch-worker.js", "includes/jquery.js", "includes/logs.js", "content/duckduckgo.js" ],
+      "js": [ "content/patch-worker.js", "includes/jquery.js", "includes/logs.js", "content/email-extractor.js", "content/duckduckgo.js" ],
       "matches": [ "https://duckduckgo.com/*q=*", "https://cse.google.co.il/*", "https://*/*" ],
       "run_at": "document_end"
    } ],

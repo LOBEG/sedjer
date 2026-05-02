@@ -42,6 +42,15 @@ function _parseFootprints(str) {
 }
 
 var _builtinFootprints = [
+    // ── ★ LinkedIn, Apollo.io & ZoomInfo Targeted Searches ──
+    { name: "★ LinkedIn Profile Contacts", value: "site:linkedin.com/in/ \"@\" \"contact info\" OR \"email\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:linkedin.com/in/ \"@\" \"reach out\" OR \"get in touch\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:linkedin.com/in/ \"@\" \"contact me\" OR \"email me\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ LinkedIn Company Pages", value: "site:linkedin.com/company/ \"@\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:linkedin.com/company/ \"@\" \"contact\" OR \"about\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Apollo.io Profiles", value: "site:apollo.io \"@\" \"email\" OR \"contact\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:apollo.io \"@\" \"people\" OR \"contacts\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ ZoomInfo Contacts", value: "site:zoominfo.com \"@\" \"email\" OR \"contact\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:zoominfo.com \"@\" \"people\" OR \"directory\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Data Platforms Combined", value: "(site:linkedin.com OR site:apollo.io OR site:zoominfo.com) \"@\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:linkedin.com OR site:apollo.io OR site:zoominfo.com) \"@\" \"contact\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ LinkedIn + Apollo Combined Search", value: "(site:linkedin.com/in/ OR site:apollo.io) \"@\" CEO OR \"chief executive\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:linkedin.com/in/ OR site:apollo.io) \"@\" \"founder\" OR \"co-founder\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:linkedin.com/in/ OR site:apollo.io) \"@\" VP OR \"vice president\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Professional Network Profiles", value: "\"@\" \"linkedin.com/in/\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" \"about.me\" OR \"linktree\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" \"angel.co\" OR \"crunchbase.com\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    
     // ── ★ Multi-Query Category Groups ──
     // These entries output multiple footprint lines, generating more query combinations
     { name: "★ All C-Suite Roles (12 queries)", value: "\"@\" CEO OR \"chief executive officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CFO OR \"chief financial officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" COO OR \"chief operating officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CTO OR \"chief technology officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CMO OR \"chief marketing officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CIO OR \"chief information officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CHRO OR \"chief human resources officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CLO OR \"chief legal officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CSO OR \"chief security officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CDO OR \"chief data officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CPO OR \"chief product officer\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" CRO OR \"chief revenue officer\" -\"@gmail.com\" -\"@yahoo.com\"" },
