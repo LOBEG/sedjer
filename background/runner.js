@@ -201,6 +201,7 @@ function _extractObfuscatedEmails(text) {
     ];
     
     obfuscatedPatterns.forEach(function(pattern) {
+        pattern.lastIndex = 0;
         var match;
         while ((match = pattern.exec(text)) !== null) {
             var email = match[0]
@@ -217,6 +218,10 @@ function _extractObfuscatedEmails(text) {
             if (email.indexOf('@') > 0 && email.split('@').length === 2) {
                 emails.push(email);
             }
+            // Prevent infinite loop on zero-length matches
+            if (match.index === pattern.lastIndex) {
+                pattern.lastIndex++;
+            }
         }
     });
     
@@ -232,7 +237,7 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         redirect: 'follow',
         headers: { 
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8',
-            'User-Agent': 'Mozilla/5.0 (compatible; ParisEmailExtractor/4.0)'
+            'User-Agent': 'Mozilla/5.0 (compatible; Paris Email Extractor/4.0)'
         }
     })
     .then(function(response) {
@@ -294,8 +299,8 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
             var hostname = urlObj.hostname.toLowerCase();
             isLinkedIn = (hostname === 'linkedin.com' || hostname.endsWith('.linkedin.com'));
         } catch (e) {
-            // Fallback to string check
-            isLinkedIn = (url.toLowerCase().indexOf('//linkedin.com') > -1 || url.toLowerCase().indexOf('.linkedin.com') > -1);
+            // If URL parsing fails, treat as non-LinkedIn
+            isLinkedIn = false;
         }
         
         if (isLinkedIn) {

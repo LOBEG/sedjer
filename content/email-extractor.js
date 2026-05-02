@@ -356,6 +356,10 @@
             while ((match = pattern.exec(text)) !== null) {
                 var email = normalizeObfuscatedEmail(match[0]);
                 addEmail(email, 'obfuscated', -10);
+                // Prevent infinite loop on zero-length matches
+                if (match.index === pattern.lastIndex) {
+                    pattern.lastIndex++;
+                }
             }
         });
 
@@ -365,6 +369,10 @@
                 pattern.lastIndex = 0;
                 while ((match = pattern.exec(text)) !== null) {
                     addEmail(match[1], 'linkedin', 5);
+                    // Prevent infinite loop on zero-length matches
+                    if (match.index === pattern.lastIndex) {
+                        pattern.lastIndex++;
+                    }
                 }
             });
         }
@@ -375,6 +383,10 @@
                 pattern.lastIndex = 0;
                 while ((match = pattern.exec(text)) !== null) {
                     addEmail(match[1], 'data-platform', 10);
+                    // Prevent infinite loop on zero-length matches
+                    if (match.index === pattern.lastIndex) {
+                        pattern.lastIndex++;
+                    }
                 }
             });
         }
@@ -479,17 +491,8 @@
                 return { platform: 'hunter', isLinkedIn: false, isDataPlatform: true };
             }
         } catch (e) {
-            // Invalid URL, fall back to string matching as last resort
-            url = url.toLowerCase();
-            if (url.indexOf('//linkedin.com') > -1 || url.indexOf('.linkedin.com') > -1) {
-                return { platform: 'linkedin', isLinkedIn: true, isDataPlatform: false };
-            }
-            if (url.indexOf('//apollo.io') > -1 || url.indexOf('.apollo.io') > -1) {
-                return { platform: 'apollo', isLinkedIn: false, isDataPlatform: true };
-            }
-            if (url.indexOf('//zoominfo.com') > -1 || url.indexOf('.zoominfo.com') > -1) {
-                return { platform: 'zoominfo', isLinkedIn: false, isDataPlatform: true };
-            }
+            // Invalid URL, return generic (no fallback to substring matching)
+            return { platform: 'generic', isDataPlatform: false };
         }
 
         return { platform: 'generic', isDataPlatform: false };
