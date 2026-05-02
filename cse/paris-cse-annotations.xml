@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Paris Email Extractor — Google Programmable Search Engine bundle
+  Auto-generated from background/api.js — DO NOT EDIT BY HAND.
+  Re-run `node cse/build-cse.js` to refresh after footprints change.
+-->
+<GoogleCustomizations>
+  <CustomSearchEngine id="paris-leadgen" creator="paris-email-extractor" volunteers="" language="en" encoding="utf-8" enable_suggest="true" safesearch="false">
+    <Title>Paris Lead-Gen Engine</Title>
+    <Description>Tuned for B2B email discovery — boosts LinkedIn, Apollo, ZoomInfo, RocketReach, Crunchbase, Wellfound, SignalHire, GitHub, Substack, country/city directories and 1000+ other professional sources.</Description>
+    <Context>
+      <BackgroundLabels>
+        <Label name="_cse_paris-leadgen" mode="FILTER"/>
+        <Label name="_include_" mode="BOOST"/>
+        <Label name="_exclude_" mode="ELIMINATE"/>
+      </BackgroundLabels>
+    </Context>
+  </CustomSearchEngine>
+  <Annotations>
+  <Annotation about="angel.co/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="anymailfinder.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="apollo.io/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="behance.net/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="bitbucket.org/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="cbinsights.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="clearbit.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="connect.clearbit.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="contactout.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="crunchbase.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="datanyze.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="disboard.org/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="discord.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="discord.gg/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="dribbble.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="f6s.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="facebook.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="findthatlead.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="fosstodon.org/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="getemail.io/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="github.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="gitlab.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="glassdoor.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="hunter.io/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="indeed.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="indiehackers.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="instagram.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="kaspr.io/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="lead411.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="linkedin.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="lusha.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="mastodon.online/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="mastodon.social/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="medium.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="monster.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="owler.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="pinterest.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="pitchbook.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="producthunt.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="quora.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="reddit.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="rocketreach.co/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="salesfully.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="salesintel.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="salesql.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="signalhire.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="skrapp.io/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="snov.io/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="stackoverflow.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="substack.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="t.me/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="telegram.me/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="threads.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="threads.net/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="tiktok.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="top.gg/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="twitch.tv/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="twitter.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="vimeo.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="voilanorbert.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="wa.me/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="wellfound.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="wiza.co/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="x.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="youtube.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="ziprecruiter.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="zoominfo.com/*" score="1"><Label name="_include_"/><Label name="paris_leadgen"/></Annotation>
+  <Annotation about="about.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="answers.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="archive.org/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="azlyrics.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="buzzfeed.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="dailymotion.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="ehow.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="examiner.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="fanfiction.net/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="flickr.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="genius.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="imdb.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="lyrics.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="metrolyrics.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="pinimg.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="rottentomatoes.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="songlyrics.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="tripadvisor.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="urbandictionary.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="wattpad.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="web.archive.org/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="wikihow.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  <Annotation about="yelp.com/*" score="0"><Label name="_exclude_"/></Annotation>
+  </Annotations>
+</GoogleCustomizations>

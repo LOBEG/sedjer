@@ -169,6 +169,78 @@
         'sentry.io': 1, 'wixpress.com': 1
     };
 
+    /**
+     * Social / platform name fragments that the page DOM frequently glues
+     * onto an email's local-part. The most common cause is a screen-reader-only
+     * label or icon caption sitting immediately before the email anchor:
+     *
+     *     <span class="sr-only">Facebook</span><a href="mailto:john@x.com">…</a>
+     *
+     * After tag-stripping (and even with our hidden-element removal) the two
+     * inline text nodes can collapse into "facebookjohn@x.com" with no
+     * whitespace between them. The standard email regex then happily matches
+     * the whole thing as one address.
+     *
+     * `stripGluedPlatformPrefix()` peels these off the local-part **only**
+     * when:
+     *   • the prefix sits at the very start of the local-part,
+     *   • there is NO separator (./_/-/+) between the prefix and the rest, AND
+     *   • after stripping the remainder is still a sane local-part
+     *     (≥ 3 chars, contains at least one letter, and is itself a valid
+     *      RFC 5322 local-part).
+     *
+     * That rules out destroying real addresses such as `facebook.tech@meta.com`
+     * (separator present) or `facebookbot@x.com` (we'd be left with "bot",
+     * 3 chars, but the post-strip address is still validated by the caller).
+     */
+    var _PLATFORM_PREFIXES = [
+        'facebook', 'fb', 'linkedin', 'linked-in', 'twitter', 'instagram',
+        'insta', 'youtube', 'yt', 'tiktok', 'pinterest', 'snapchat', 'snap',
+        'reddit', 'github', 'gitlab', 'bitbucket', 'medium', 'telegram',
+        'whatsapp', 'discord', 'twitch', 'vimeo', 'dribbble', 'behance',
+        'threads', 'mastodon', 'tumblr', 'flickr', 'soundcloud', 'spotify',
+        'patreon', 'onlyfans', 'substack', 'quora', 'wechat', 'line', 'kakao',
+        'viber', 'signal', 'slack', 'skype', 'zoom', 'meetup', 'eventbrite',
+        'crunchbase', 'angellist', 'wellfound', 'apollo', 'zoominfo',
+        'rocketreach', 'hunter', 'signalhire', 'fullcontact', 'clearbit',
+        // Generic UI labels that pollute icon-glyph mailtos
+        'email', 'mail', 'contact', 'social'
+    ].sort(function (a, b) { return b.length - a.length; }); // longest first
+
+    function _hasLetter(s) { return /[a-z]/i.test(s); }
+
+    /**
+     * Strip a leading platform-name fragment from an email's local-part if
+     * it was concatenated there by HTML tag-stripping. Returns the cleaned
+     * email, or the original string when no safe strip is possible.
+     */
+    function stripGluedPlatformPrefix(email) {
+        if (!email || typeof email !== 'string') return email;
+        var at = email.lastIndexOf('@');
+        if (at <= 0) return email;
+        var local = email.substring(0, at);
+        var rest = email.substring(at);
+        var lcLocal = local.toLowerCase();
+        for (var i = 0; i < _PLATFORM_PREFIXES.length; i++) {
+            var p = _PLATFORM_PREFIXES[i];
+            if (lcLocal.length <= p.length) continue;
+            if (lcLocal.substring(0, p.length) !== p) continue;
+            // Reject if a separator already sits between prefix and rest —
+            // that means the user really wrote `facebook.john@…`.
+            var nextChar = lcLocal.charAt(p.length);
+            if (nextChar === '.' || nextChar === '-' ||
+                nextChar === '_' || nextChar === '+') continue;
+            var stripped = local.substring(p.length);
+            // Demand a meaningful remainder so we don't turn `facebookbot`
+            // into `bot` (which would still pass), but DO turn `facebookjohn`
+            // into `john`. Three chars + ≥ 1 letter is the floor.
+            if (stripped.length < 3) continue;
+            if (!_hasLetter(stripped)) continue;
+            return stripped + rest;
+        }
+        return email;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Extraction Functions
     // ═══════════════════════════════════════════════════════════════════════════
@@ -323,7 +395,13 @@
         // Helper function to add email to results
         function addEmail(email, source, confidence) {
             email = email.trim().toLowerCase();
-            
+
+            // Peel off any social-platform prefix that got concatenated to the
+            // local-part during tag-stripping (e.g. "facebookjohn@x.com" →
+            // "john@x.com"). Safe — only strips when no separator is present
+            // and the remainder is still a sane local-part.
+            email = stripGluedPlatformPrefix(email);
+
             // Avoid duplicates
             if (seen.hasOwnProperty(email)) {
                 return;
@@ -503,6 +581,11 @@
             return emailObj.email || emailObj;
         });
     };
+
+    // Expose the platform-prefix scrubber so callers (background runner,
+    // tests, future preprocessors) can re-use the same logic without
+    // re-implementing the prefix list.
+    EmailExtractor.stripGluedPlatformPrefix = stripGluedPlatformPrefix;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Utility Functions

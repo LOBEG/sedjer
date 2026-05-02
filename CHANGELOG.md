@@ -2,6 +2,37 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.5.0] - 2026-05-02
+
+### 🎯 Footprint-named saves · Cleaner extractions · Programmable Search Engine
+
+#### Footprint name in saved filenames
+- When you run `paris footprint Apollo --desktop` (or save from the menu), the file is now named after the footprint that produced it — e.g. `paris-Apollo.io-2026-05-02_15-30-12.csv` — instead of the generic `paris-footprint-…`.
+- `extract --desktop` now uses the URL's hostname (`paris-acme.com-…`); `search` uses a 4-word slug of the query; `permute` uses `first.last@domain`; `mx` uses the first email's domain. Every saved file is self-describing at a glance.
+- Filenames are sanitised for cross-platform safety (NFKD-normalised, diacritics stripped, illegal chars replaced, clamped to 60 chars).
+
+#### Strip social-platform prefixes glued to emails
+- Emails like `facebookjohn@gmail.com` and `linkedinjane@example.com` — caused by screen-reader-only platform-name spans collapsing onto the email's local-part during HTML tag-stripping — are now automatically cleaned to `john@gmail.com` / `jane@example.com`.
+- New `EmailExtractor.stripGluedPlatformPrefix()` runs inside `addEmail()` so both content scripts (extension) and the service worker (deep-scan) and the CLI all benefit from a single source of truth. The list covers ~50 platform names: Facebook, LinkedIn, Twitter, Instagram, YouTube, TikTok, Pinterest, Snapchat, Reddit, GitHub, GitLab, Medium, Telegram, WhatsApp, Discord, Twitch, Vimeo, Dribbble, Behance, Threads, Mastodon, Tumblr, Substack, Quora, plus generic UI labels (`email`, `mail`, `contact`, `social`).
+- Safe by design: only strips when there is no separator (`./_/-/+`) between the prefix and the rest, AND the remainder is still a sane local-part (≥ 3 chars, ≥ 1 letter). Real addresses such as `facebook.tech@meta.com` are untouched.
+
+#### Drop hidden / honeypot emails
+- Both `cli/paris.js#htmlToScannable` and `background/runner.js#_deepFetchPage` now strip hidden subtrees **before** the email regex sees them. Removed: elements with `display:none`, `visibility:hidden`, `opacity:0`, `font-size:0`, the `hidden` HTML attribute, `aria-hidden="true"`, and the conventional screen-reader-only classes (`sr-only`, `visually-hidden`, `screen-reader-text`, `u-hidden-visually`, `hidden-visually`, `element-invisible`, `usa-sr-only`). HTML comments are also dropped (they sometimes preserve stale honeypot addresses).
+- Two passes catch one level of nesting (hidden→hidden), enough for the ~99% case.
+
+#### Powerful Programmable Search Engine bundle  (`cse/`)
+- New **`cse/paris-cse-annotations.xml`** — drop-in annotation set for [Google Programmable Search Engine](https://programmablesearchengine.google.com). Auto-generated from all 1062 built-in footprints; boosts ~70 lead-gen domains (LinkedIn, Apollo, ZoomInfo, RocketReach, Crunchbase, Wellfound, GitHub, Substack, Behance, Dribbble, Stack Overflow Careers, …) and excludes 23 known noise sites (TripAdvisor, Pinterest, Yelp, lyrics farms, Web Archive, …).
+- New **`cse/CSE.md`** — 60-second setup guide with copy-paste import instructions and the three ways to plug your `cx` back into the program.
+- New **`cse/build-cse.js`** — regenerator. Re-run after editing footprints to refresh the bundle.
+- New CLI flag **`--cse <cx>`** (and `PARIS_CSE_CX` env var, and menu option 8 → "CSE engine ID (cx)") — when provided, `paris search` and `paris footprint` route through Google's public Programmable Search Engine results page instead of the DDG HTML scraper. **No API key required.** Falls back to DuckDuckGo automatically if the engine returns 0 hits or fails.
+- All existing flags (`--country`, `--follow-contact`, `--mx`, `--include-isp`, `--strict`, `--desktop`, history filtering, …) work identically with the CSE path.
+
+### Compatibility
+- Browser-extension behaviour for end-users is **unchanged** apart from the prefix-stripping and hidden-element-stripping bug fixes (they fire automatically; no UI to enable).
+- CLI behaviour is fully backward-compatible: existing scripts continue to work; CSE is opt-in.
+
+---
+
 ## [4.4.0] - 2026-05-02
 
 ### 🧭 Interactive Menu · Save-to-Desktop · Higher Recall

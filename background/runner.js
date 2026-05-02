@@ -201,6 +201,44 @@ function _platformFromUrl(url) {
     return { platform: 'generic', isLinkedIn: false, isDataPlatform: false };
 }
 
+// Strip hidden elements before email extraction. Mirrors the helper of the
+// same name in cli/paris.js — keep the two in sync. See the long comment
+// there for the rationale; the short version is:
+//   • removes <script>/<style> wholesale (already done below, kept here for
+//     comment alignment),
+//   • removes HTML comments,
+//   • removes elements carrying display:none / visibility:hidden / opacity:0,
+//     `hidden`, aria-hidden="true", or screen-reader-only classes
+//     (sr-only / visually-hidden / screen-reader-text / etc.).
+// This stops anti-bot honeypots from polluting results AND prevents the
+// "facebookjohn@x.com" bug where SR-only platform-name spans got glued to
+// the email's local-part during tag-stripping.
+function _stripHiddenElements(html) {
+    if (!html || typeof html !== 'string') return html;
+    var out = html.replace(/<!--[\s\S]*?-->/g, ' ');
+    var hiddenStyleAttr = '(?:style\\s*=\\s*"[^"]*(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden|opacity\\s*:\\s*0(?![\\d.])|font-size\\s*:\\s*0(?![\\d.]))[^"]*"' +
+                           "|style\\s*=\\s*'[^']*(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden|opacity\\s*:\\s*0(?![\\d.])|font-size\\s*:\\s*0(?![\\d.]))[^']*')";
+    var hiddenAttrs = '(?:' +
+        hiddenStyleAttr + '|' +
+        '\\bhidden(?=[\\s>])' + '|' +
+        'aria-hidden\\s*=\\s*["\']true["\']' + '|' +
+        'class\\s*=\\s*"[^"]*\\b(?:sr-only|visually-hidden|screen-reader-text|u-hidden-visually|hidden-visually|element-invisible|usa-sr-only)\\b[^"]*"' + '|' +
+        "class\\s*=\\s*'[^']*\\b(?:sr-only|visually-hidden|screen-reader-text|u-hidden-visually|hidden-visually|element-invisible|usa-sr-only)\\b[^']*'" +
+        ')';
+    var elementNames = ['span', 'div', 'p', 'a', 'li', 'ul', 'ol', 'section',
+        'article', 'aside', 'header', 'footer', 'nav', 'figure', 'figcaption',
+        'em', 'strong', 'b', 'i', 'small', 'label', 'time', 'address',
+        'mark', 'q', 'cite', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'main',
+        'details', 'summary', 'fieldset', 'legend', 'pre', 'code', 'blockquote'];
+    var nameAlt = elementNames.join('|');
+    var hiddenBlockRe = new RegExp(
+        '<(' + nameAlt + ')\\b[^>]*' + hiddenAttrs + '[^>]*>[\\s\\S]*?</\\s*\\1\\s*>',
+        'gi'
+    );
+    out = out.replace(hiddenBlockRe, ' ').replace(hiddenBlockRe, ' ');
+    return out;
+}
+
 function _deepFetchPage(url, pattern, removeDuplicates) {
     var controller = new AbortController();
     var timeout = setTimeout(function() { controller.abort(); }, 20000);
@@ -227,6 +265,10 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
             log.w('_deepFetchPage: EmailExtractor not available');
             return;
         }
+
+        // Drop hidden subtrees / honeypots / HTML comments first — see
+        // the long comment on _stripHiddenElements above.
+        html = _stripHiddenElements(html);
 
         var platformInfo = _platformFromUrl(url);
 

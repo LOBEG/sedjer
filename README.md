@@ -6,7 +6,13 @@ Paris Email Extractor is an advanced Chrome extension that discovers and extract
 
 ---
 
-## ✨ What's new in v4.4
+## ✨ What's new in v4.5
+
+- **Footprint-named saved files** – `paris footprint Apollo --desktop` now writes `paris-Apollo.io-2026-05-02_15-30-12.csv` (instead of the generic `paris-footprint-…`). Every command picks a self-describing label: extract uses the URL host, search uses a query slug, permute uses `first.last@domain`, mx uses the email's domain.
+- **Cleaner extractions** – emails like `facebookjohn@gmail.com` / `linkedinjane@example.com` (caused by screen-reader-only platform labels collapsing onto the local-part) are now scrubbed automatically. Hidden elements (`display:none`, `aria-hidden="true"`, `sr-only` / `visually-hidden` classes, the `hidden` attribute) are stripped *before* the regex sees them, so anti-bot honeypots no longer leak fake addresses into your results.
+- **Programmable Search Engine bundle** – new [`cse/`](cse/CSE.md) folder ships a ready-to-import Google PSE config that boosts ~70 lead-gen domains and excludes 23 noise sites. Pass `--cse <cx>` (or set `PARIS_CSE_CX`, or use menu option 8) to route every search through your own engine. **No API key required**; falls back to DuckDuckGo on failure.
+
+## What's new in v4.4
 
 - **Interactive menu** – just **double-click the .exe** (or run `paris` with no arguments) and a numbered menu lists every feature on screen. No commands to memorise. Each prompt has a sensible default; after each action you get a "**Save results to your Desktop? [Y/n]**" prompt that writes a timestamped CSV/JSON/TXT to `~/Desktop/`.
 - **`--desktop` flag** – on every command (`extract`, `search`, `footprint`, `permute`, `mx`, `history list`) saves the output straight to your Desktop with a sane filename.

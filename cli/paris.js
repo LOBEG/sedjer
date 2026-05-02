@@ -196,7 +196,71 @@ function pMap(items, concurrency, fn, onProgress) {
 }
 
 // ── HTML → scannable text (mirrors background/runner.js _deepFetchPage) ─────
+//
+// We strip three classes of content BEFORE the email regex sees the page:
+//
+//   1. <script> and <style> blocks     — never user-visible content
+//   2. HTML comments                    — sometimes contain stale honeypot
+//                                         email addresses
+//   3. Hidden elements                  — `display:none`, `visibility:hidden`,
+//                                         `opacity:0`, the `hidden` HTML
+//                                         attribute, `aria-hidden="true"`,
+//                                         and the conventional
+//                                         screen-reader-only class names
+//                                         (`sr-only`, `visually-hidden`,
+//                                         `screen-reader-text`,
+//                                         `u-hidden-visually`).
+//
+// The third class is critical: many lead-gen sites plant truncated /
+// fake addresses inside hidden elements as scraper honeypots, and many
+// social-card components plant the platform NAME ("Facebook", "LinkedIn")
+// inside an SR-only span sitting RIGHT BEFORE the real <a> link. After
+// tag-stripping those text nodes can collapse onto the email's local-part,
+// which is the root cause of "facebookjohn@gmail.com"-style results.
+//
+// Removing the hidden subtree at this stage fixes both problems at once
+// without disturbing any visible text on the page.
+function _stripHiddenElements(html) {
+    if (!html || typeof html !== 'string') return html;
+    // Drop HTML comments outright — they sometimes preserve old honeypot
+    // addresses that real visitors never see.
+    var out = html.replace(/<!--[\s\S]*?-->/g, ' ');
+
+    // Strip inline-style hidden / zero-opacity blocks. We match the OPENING
+    // tag carrying the hidden style, then non-greedily capture through the
+    // matching closing tag for the same element name. JS regex has no
+    // recursive matching so deeply-nested hidden trees are handled by
+    // running the pass twice — once is enough for the ~99% case.
+    var hiddenStyleAttr = '(?:style\\s*=\\s*"[^"]*(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden|opacity\\s*:\\s*0(?![\\d.])|font-size\\s*:\\s*0(?![\\d.]))[^"]*"' +
+                           "|style\\s*=\\s*'[^']*(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden|opacity\\s*:\\s*0(?![\\d.])|font-size\\s*:\\s*0(?![\\d.]))[^']*')";
+    var hiddenAttrs = '(?:' +
+        hiddenStyleAttr + '|' +
+        '\\bhidden(?=[\\s>])' + '|' +
+        'aria-hidden\\s*=\\s*["\']true["\']' + '|' +
+        'class\\s*=\\s*"[^"]*\\b(?:sr-only|visually-hidden|screen-reader-text|u-hidden-visually|hidden-visually|element-invisible|usa-sr-only)\\b[^"]*"' + '|' +
+        "class\\s*=\\s*'[^']*\\b(?:sr-only|visually-hidden|screen-reader-text|u-hidden-visually|hidden-visually|element-invisible|usa-sr-only)\\b[^']*'" +
+        ')';
+
+    // For each common inline/block element that can carry hidden state,
+    // strip the whole subtree. Self-closing void elements have no content
+    // to strip, but we still drop the tag itself.
+    var elementNames = ['span', 'div', 'p', 'a', 'li', 'ul', 'ol', 'section',
+        'article', 'aside', 'header', 'footer', 'nav', 'figure', 'figcaption',
+        'em', 'strong', 'b', 'i', 'small', 'label', 'time', 'address',
+        'mark', 'q', 'cite', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'main',
+        'details', 'summary', 'fieldset', 'legend', 'pre', 'code', 'blockquote'];
+    var nameAlt = elementNames.join('|');
+    var hiddenBlockRe = new RegExp(
+        '<(' + nameAlt + ')\\b[^>]*' + hiddenAttrs + '[^>]*>[\\s\\S]*?</\\s*\\1\\s*>',
+        'gi'
+    );
+    // Two passes catch one level of nesting (hidden→hidden) in practice.
+    out = out.replace(hiddenBlockRe, ' ').replace(hiddenBlockRe, ' ');
+    return out;
+}
+
 function htmlToScannable(html) {
+    html = _stripHiddenElements(html);
     var preserved = [];
     var m;
 
@@ -299,6 +363,84 @@ function ddgSearchUrls(query, maxPages) {
     return pull();
 }
 
+// ── Google Programmable Search Engine (CSE) result scraper ──────────────────
+//
+// When the user has set up a CSE (see cse/CSE.md) and provides a `cx`
+// (per-command --cse flag, PARIS_CSE_CX env var, or the menu setting), we
+// route the query through Google's PUBLIC results page rather than the
+// DDG scraper. No API key required — we parse the same way DDG is parsed.
+//
+// CSE renders 10 hits per page. We dedupe and stop when a page produces
+// nothing new (Google often serves <10 if the query is rare).
+//
+// On ANY hard failure (HTTP error, zero hits) we silently fall back to
+// DuckDuckGo so existing workflows keep working.
+function cseSearchUrls(query, maxPages, cx) {
+    if (!cx) return ddgSearchUrls(query, maxPages);
+    maxPages = Math.max(1, maxPages | 0);
+    var results = [];
+    var page = 0;
+    var safeCx = encodeURIComponent(String(cx).trim());
+    function pull() {
+        if (page >= maxPages) return Promise.resolve(results);
+        var q = encodeURIComponent(query);
+        var start = page * 10;
+        var u = 'https://cse.google.com/cse?cx=' + safeCx + '&q=' + q +
+                (start ? '&start=' + start : '');
+        return fetchUrl(u, { timeoutMs: 25000 })
+            .then(function (resp) {
+                var before = results.length;
+                // CSE result anchors: <a class="gs-title" href="https://…">
+                // Google's elements API also embeds them as JSON inside a
+                // gsc-result element; the simple href grab is sufficient
+                // for both layouts.
+                var hrefRe = /<a[^>]+class="[^"]*gs-title[^"]*"[^>]+href="([^"]+)"/gi;
+                var m;
+                while ((m = hrefRe.exec(resp.body)) !== null) {
+                    var href = m[1].replace(/&amp;/g, '&');
+                    if (/^https?:\/\//i.test(href) && results.indexOf(href) === -1) {
+                        results.push(href);
+                    }
+                }
+                if (results.length === before) {
+                    // CSE returned no new hits — bail out of pagination.
+                    return results;
+                }
+                page++;
+                return new Promise(function (r) { setTimeout(r, 1500); }).then(pull);
+            })
+            .catch(function (err) {
+                process.stderr.write('  CSE page ' + (page + 1) + ' failed: ' + err.message + '\n');
+                return results;
+            });
+    }
+    return pull().then(function (urls) {
+        if (urls.length > 0) return urls;
+        process.stderr.write('  CSE returned 0 results — falling back to DuckDuckGo\n');
+        return ddgSearchUrls(query, maxPages);
+    });
+}
+
+// Resolve which engine to use for a search command. Priority:
+//   1. --cse <cx> flag on the command
+//   2. PARIS_CSE_CX environment variable
+//   3. INTERACTIVE_SETTINGS.cseCx (set via the menu)
+//   4. nothing → use DuckDuckGo
+function _resolveCseCx(args) {
+    if (args && args.flags && args.flags.cse) return String(args.flags.cse).trim();
+    if (process.env.PARIS_CSE_CX) return String(process.env.PARIS_CSE_CX).trim();
+    if (typeof INTERACTIVE_SETTINGS !== 'undefined' && INTERACTIVE_SETTINGS && INTERACTIVE_SETTINGS.cseCx) {
+        return String(INTERACTIVE_SETTINGS.cseCx).trim();
+    }
+    return '';
+}
+
+function searchUrls(query, maxPages, args) {
+    var cx = _resolveCseCx(args);
+    if (cx) return cseSearchUrls(query, maxPages, cx);
+    return ddgSearchUrls(query, maxPages);
+}
+
 // ── MX validation (Node native DNS) ─────────────────────────────────────────
 var _mxCache = {};
 function checkMx(domain) {
@@ -380,18 +522,67 @@ function resolveDesktopPath() {
     return home || process.cwd();
 }
 
-// Build a default desktop filename for a given command + format.
-function defaultDesktopFilename(command, fmt) {
+// Sanitise an arbitrary string into something that's safe to embed in a
+// filename on every OS (Windows banishes < > : " / \ | ? *; macOS dislikes
+// : in legacy paths). Collapses runs of whitespace/punct to a single dash,
+// trims, and clamps to a reasonable length so the final filename never
+// blows past the 255-byte filesystem limit.
+function slugifyForFilename(s) {
+    if (!s) return '';
+    return String(s)
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')           // strip diacritics
+        .replace(/[<>:"/\\|?*\x00-\x1F]+/g, ' ')   // illegal on Windows
+        .replace(/[^A-Za-z0-9._@+-]+/g, '-')       // anything else → dash
+        .replace(/-+/g, '-')
+        .replace(/^[-_.]+|[-_.]+$/g, '')
+        .slice(0, 60);
+}
+
+// Build a default desktop filename for a given command + format. When a
+// `label` is provided (e.g. the footprint name, the URL host being scraped,
+// or a slug of a search query) it gets baked into the filename so the
+// saved file is self-describing — `paris-Apollo.io-2026-05-02_15-30-12.csv`
+// instead of the generic `paris-footprint-…`.
+// Pick a sensible "label" for the saved filename. Used by every command
+// that calls writeOutput({ desktop: true }) so the file on disk is
+// self-describing rather than the generic "paris-extract-…".
+function _labelFromExtractTarget(target) {
+    if (!target) return '';
+    if (/^https?:\/\//i.test(target)) {
+        try { return new URL(target).hostname.replace(/^www\./, ''); }
+        catch (e) { return target; }
+    }
+    // Strip directory + extension for local files
+    return String(target).split(/[\\/]/).pop().replace(/\.[a-z0-9]{1,6}$/i, '');
+}
+
+// Compress a search query into a short label suitable for a filename.
+// Drops operators (site:, intext:, "), keeps the first few content words.
+function _labelFromSearchQuery(q) {
+    if (!q) return '';
+    var s = String(q)
+        .replace(/"/g, ' ')
+        .replace(/\b(site|intext|inurl|intitle|filetype|after|before):\S+/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    // Take the first few words to keep the filename short.
+    return s.split(' ').slice(0, 4).join(' ');
+}
+
+function defaultDesktopFilename(command, fmt, label) {
     var ext = (fmt === 'json' || fmt === 'csv' || fmt === 'txt') ? fmt : 'txt';
     var ts = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-    return 'paris-' + (command || 'leads') + '-' + ts + '.' + ext;
+    var slug = slugifyForFilename(label);
+    var middle = slug ? slug : (command || 'leads');
+    return 'paris-' + middle + '-' + ts + '.' + ext;
 }
 
 function writeOutput(text, outFile, opts) {
     opts = opts || {};
     // --desktop wins over --out=null but loses to an explicit --out.
     if (!outFile && opts.desktop) {
-        outFile = path.join(resolveDesktopPath(), defaultDesktopFilename(opts.command, opts.fmt));
+        outFile = path.join(resolveDesktopPath(), defaultDesktopFilename(opts.command, opts.fmt, opts.label));
     }
     if (outFile) {
         try {
@@ -729,7 +920,7 @@ function cmdExtract(args) {
             var filtered = applyHistoryFilter(records, historyOpts);
             recordHistory(filtered, { command: 'extract' });
             process.stderr.write('Found ' + filtered.length + ' email(s)' + (extraNote || '') + '\n');
-            writeOutput(formatOutput(filtered, fmt), out, { fmt: fmt, command: 'extract', desktop: !!args.flags.desktop });
+            writeOutput(formatOutput(filtered, fmt), out, { fmt: fmt, command: 'extract', label: _labelFromExtractTarget(target), desktop: !!args.flags.desktop });
         }
 
         if (followContact && page.src) {
@@ -745,7 +936,7 @@ function cmdExtract(args) {
 function cmdSearch(args) {
     var query = args.pos.join(' ');
     if (!query) {
-        console.error('usage: paris search "<query>" [--country CC] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--mx] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--history PATH]');
+        console.error('usage: paris search "<query>" [--country CC] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--strict] [--domain D] [--mx] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--cse CX] [--desktop] [--history PATH]');
         process.exit(1);
     }
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
@@ -776,8 +967,9 @@ function cmdSearch(args) {
         process.stderr.write('Date-bounded query: ' + query + '\n');
     }
 
-    process.stderr.write('Searching DuckDuckGo for: ' + query + '\n');
-    return ddgSearchUrls(query, maxPages).then(function (urls) {
+    var _useCx = _resolveCseCx(args);
+    process.stderr.write('Searching ' + (_useCx ? 'Google CSE' : 'DuckDuckGo') + ' for: ' + query + '\n');
+    return searchUrls(query, maxPages, args).then(function (urls) {
         process.stderr.write('  ' + urls.length + ' result URL(s) discovered. Deep-scanning with concurrency=' + concurrency + (followContact ? ' (follow-contact ON)' : '') + '\n');
         var allRecords = [];
         var seen = {};
@@ -822,7 +1014,7 @@ function cmdSearch(args) {
             return allRecords;
         });
     }).then(function (records) {
-        writeOutput(formatOutput(records, fmt), out, { fmt: fmt, command: 'search', desktop: !!args.flags.desktop });
+        writeOutput(formatOutput(records, fmt), out, { fmt: fmt, command: 'search', label: _labelFromSearchQuery(query), desktop: !!args.flags.desktop });
     });
 }
 
@@ -870,7 +1062,7 @@ function cmdFootprint(args) {
         collected = applyHistoryFilter(collected, historyOpts);
         recordHistory(collected, { command: 'footprint', footprint: match.name });
         var fmt = args.flags.format || 'txt';
-        writeOutput(formatOutput(collected, fmt), args.flags.out, { fmt: fmt, command: 'footprint', desktop: !!args.flags.desktop });
+        writeOutput(formatOutput(collected, fmt), args.flags.out, { fmt: fmt, command: 'footprint', label: match.name, desktop: !!args.flags.desktop });
     });
 }
 
@@ -896,7 +1088,7 @@ function runSearchInternal(args) {
     }
     var followContact = !!args.flags['follow-contact'];
     var historyOpts = _historyOptsFromArgs(args);
-    return ddgSearchUrls(query, maxPages).then(function (urls) {
+    return searchUrls(query, maxPages, args).then(function (urls) {
         var seen = {};
         var records = [];
         function ingest(html, srcUrl) {
@@ -932,14 +1124,15 @@ function cmdPermute(args) {
         middleName: args.flags.middle || '',
         includeUnusual: !!args.flags.unusual
     });
+    var permLabel = first + '.' + last + '@' + dom;
     if (!args.flags.mx) {
-        writeOutput(perms.join('\n'), args.flags.out, { fmt: 'txt', command: 'permute', desktop: !!args.flags.desktop });
+        writeOutput(perms.join('\n'), args.flags.out, { fmt: 'txt', command: 'permute', label: permLabel, desktop: !!args.flags.desktop });
         return Promise.resolve();
     }
     return validateEmailMx(perms).then(function (mx) {
         var rec = perms.map(function (e) { return { email: e, mxValid: mx.valid.indexOf(e) !== -1 }; });
         var fmt = args.flags.format || 'txt';
-        writeOutput(formatOutput(rec.filter(function (r) { return r.mxValid; }), fmt), args.flags.out, { fmt: fmt, command: 'permute', desktop: !!args.flags.desktop });
+        writeOutput(formatOutput(rec.filter(function (r) { return r.mxValid; }), fmt), args.flags.out, { fmt: fmt, command: 'permute', label: permLabel, desktop: !!args.flags.desktop });
     });
 }
 
@@ -952,10 +1145,17 @@ function cmdMx(args) {
     return validateEmailMx(args.pos, concurrency).then(function (mx) {
         var rec = args.pos.map(function (e) { return { email: e, mxValid: mx.valid.indexOf(e) !== -1 }; });
         var fmt = args.flags.format || 'txt';
+        // Label the saved file by the first email's domain so a single-domain
+        // batch ends up as e.g. "paris-mx-acme.com-2026-…"
+        var firstDomain = '';
+        if (args.pos[0] && args.pos[0].indexOf('@') !== -1) {
+            firstDomain = args.pos[0].split('@')[1];
+        }
+        var mxLabel = (args.pos.length === 1 ? args.pos[0] : firstDomain) || 'mx';
         if (fmt === 'txt') {
-            writeOutput(rec.map(function (r) { return (r.mxValid ? '[ok] ' : '[--] ') + r.email; }).join('\n'), args.flags.out, { fmt: 'txt', command: 'mx', desktop: !!args.flags.desktop });
+            writeOutput(rec.map(function (r) { return (r.mxValid ? '[ok] ' : '[--] ') + r.email; }).join('\n'), args.flags.out, { fmt: 'txt', command: 'mx', label: mxLabel, desktop: !!args.flags.desktop });
         } else {
-            writeOutput(formatOutput(rec, fmt), args.flags.out, { fmt: fmt, command: 'mx', desktop: !!args.flags.desktop });
+            writeOutput(formatOutput(rec, fmt), args.flags.out, { fmt: fmt, command: 'mx', label: mxLabel, desktop: !!args.flags.desktop });
         }
     });
 }
@@ -1108,11 +1308,15 @@ function help() {
         '  --after  YYYY-MM-DD     Search-engine `after:` operator — only crawl pages',
         '                          indexed/published on/after this date',
         '  --before YYYY-MM-DD     Search-engine `before:` operator',
+        '  --cse <cx>              Use Google Programmable Search Engine instead of',
+        '                          DuckDuckGo. See cse/CSE.md for one-time setup.',
+        '                          Equivalent: PARIS_CSE_CX env var, or menu option 8.',
         '',
         'EXAMPLES',
         '  paris                                                       # interactive menu',
         '  paris extract https://example.com --follow-contact --desktop',
         '  paris search "site:linkedin.com/in/ \\"@acme.com\\"" --country GB --mx --desktop',
+        '  paris search "@acme.com" --cse 0123456789abcdef0:abcdefghijk --desktop',
         '  paris footprint "Apollo.io" --country DE --max-pages 3 --format csv --desktop',
         '  paris footprint "Lead Platform: Facebook Pages" --after 2025-01-01 --desktop',
         '  paris permute Jane Doe acme.com --mx --desktop',
@@ -1225,7 +1429,8 @@ var INTERACTIVE_SETTINGS = {
     followContact: true,
     maxPages: 3,
     minConfidence: null,    // null = use default rule
-    saveFolder: ''           // '' = Desktop
+    saveFolder: '',         // '' = Desktop
+    cseCx: process.env.PARIS_CSE_CX || ''  // Google Programmable Search Engine ID; '' = use DuckDuckGo
 };
 
 function _commonFlagsFromSettings(extra) {
@@ -1242,13 +1447,14 @@ function _commonFlagsFromSettings(extra) {
 // after the command has finished. We override the global function for the
 // duration of one action and restore it afterwards.
 function _captureOutput(action) {
-    var captured = { text: null, command: null, fmt: 'txt' };
+    var captured = { text: null, command: null, fmt: 'txt', label: '' };
     var original = writeOutput;
     writeOutput = function (text, outFile, opts) {
         opts = opts || {};
         captured.text = text;
         captured.command = opts.command || captured.command;
         captured.fmt = opts.fmt || captured.fmt;
+        if (opts.label) captured.label = opts.label;
         // If the user passed --out / --desktop explicitly, write it now too;
         // otherwise just stash the text so the menu can prompt the user.
         if (outFile || opts.desktop) {
@@ -1271,7 +1477,7 @@ function _afterAction(rl, captured) {
         .then(function (yes) {
             if (!yes) return;
             var folder = INTERACTIVE_SETTINGS.saveFolder || resolveDesktopPath();
-            var fname = defaultDesktopFilename(captured.command || 'leads', captured.fmt || 'txt');
+            var fname = defaultDesktopFilename(captured.command || 'leads', captured.fmt || 'txt', captured.label);
             var full = path.join(folder, fname);
             try {
                 if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
@@ -1482,6 +1688,7 @@ function _menuSettings(rl) {
     process.stdout.write('    followContact=' + INTERACTIVE_SETTINGS.followContact + '\n');
     process.stdout.write('    maxPages=' + INTERACTIVE_SETTINGS.maxPages + '\n');
     process.stdout.write('    saveFolder=' + (INTERACTIVE_SETTINGS.saveFolder || '(Desktop)') + '\n');
+    process.stdout.write('    cseCx=' + (INTERACTIVE_SETTINGS.cseCx ? INTERACTIVE_SETTINGS.cseCx : '(DuckDuckGo)') + '\n');
     return _askYesNo(rl, 'Toggle skip-seen?', false).then(function (yes) {
         if (yes) INTERACTIVE_SETTINGS.skipSeen = !INTERACTIVE_SETTINGS.skipSeen;
     }).then(function () {
@@ -1501,6 +1708,10 @@ function _menuSettings(rl) {
         return _ask(rl, 'Default save folder (blank = Desktop)', INTERACTIVE_SETTINGS.saveFolder || '');
     }).then(function (folder) {
         INTERACTIVE_SETTINGS.saveFolder = folder || '';
+    }).then(function () {
+        return _ask(rl, 'CSE engine ID (cx) — see cse/CSE.md (blank = DuckDuckGo)', INTERACTIVE_SETTINGS.cseCx || '');
+    }).then(function (cx) {
+        INTERACTIVE_SETTINGS.cseCx = String(cx || '').trim();
     }).then(function () {
         process.stdout.write('  ✔ Settings updated.\n');
     });
