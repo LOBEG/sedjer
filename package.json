@@ -1,0 +1,64 @@
+{
+  "name": "paris-email-extractor",
+  "version": "4.0.0",
+  "description": "Paris Email Extractor — Advanced Email Discovery & Extraction Tool. Runs as a Chrome/Edge browser extension AND as a standalone Node.js CLI / packaged executable.",
+  "bin": {
+    "paris": "cli/paris.js"
+  },
+  "main": "cli/paris.js",
+  "scripts": {
+    "start": "node cli/paris.js",
+    "test:smoke": "node cli/paris.js --version && node cli/paris.js list-footprints | head -n 5",
+    "build:exe": "pkg . --compress GZip --out-path dist",
+    "build:exe:win": "pkg . --targets node18-win-x64 --out-path dist",
+    "build:exe:mac": "pkg . --targets node18-macos-x64,node18-macos-arm64 --out-path dist",
+    "build:exe:linux": "pkg . --targets node18-linux-x64 --out-path dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "cli/",
+    "content/email-extractor.js",
+    "background/api.js",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "pkg": {
+    "scripts": [
+      "cli/paris.js",
+      "content/email-extractor.js"
+    ],
+    "assets": [
+      "background/api.js"
+    ],
+    "targets": [
+      "node18-win-x64",
+      "node18-macos-x64",
+      "node18-linux-x64"
+    ],
+    "outputPath": "dist"
+  },
+  "keywords": [
+    "email",
+    "extractor",
+    "scraper",
+    "lead-generation",
+    "linkedin",
+    "apollo",
+    "zoominfo",
+    "rocketreach",
+    "lusha",
+    "crunchbase",
+    "mx-validation",
+    "footprints",
+    "cli",
+    "chrome-extension"
+  ],
+  "author": "LOBEG",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LOBEG/sedjer.git"
+  }
+}

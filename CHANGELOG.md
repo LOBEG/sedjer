@@ -2,6 +2,39 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.1.0] - 2026-05-02
+
+### 🚀 Extended Coverage & Standalone Executable
+
+#### New built-in footprints (additive — existing entries unchanged)
+- **★ Crunchbase Profiles** — `site:crunchbase.com/person/` and `/organization/` searches
+- **★ RocketReach Profiles** — direct `site:rocketreach.co` queries
+- **★ Lusha Contacts** — `site:lusha.com` with email/contact matchers
+- **★ Hunter.io Discovery** — `site:hunter.io` and `/companies` searches
+- **★ Clearbit Profiles** — `site:clearbit.com` and `connect.clearbit.com`
+- **★ SignalHire Profiles** — `site:signalhire.com` searches
+- **★ Salesfully / Salesintel / Lead411** — combined data-vendor query
+- **★ AngelList / Wellfound Founders** — founder/CEO targeted on `angel.co` + `wellfound.com`
+- **★ GitHub Public Email Leaks** — picks up `*.users.noreply.github.com` and org contact pages
+- **★ Extended Data Platforms Combined** — multi-`site:` OR query across all the above
+
+#### Enhanced extraction
+- **International (RFC 6531 / IDN) email regex** — picks up addresses with non-ASCII local parts and IDN domains (e.g. `müller@straße.de`, `用户@例子.广告`) that the strict ASCII regex skipped. Runs only when text actually contains non-ASCII characters; safely no-ops on older runtimes lacking Unicode property escape support.
+- **`EmailExtractor.generatePermutations(firstName, lastName, domain, opts)`** — generates the most common corporate email permutations (`firstname.lastname@`, `flastname@`, `firstnamel@`, reversed forms, etc.). Strips diacritics and apostrophes (`José Müller` → `jose.muller@…`, `Jane O'Connor` → `jane.oconnor@…`). Useful when discovery surfaces a name but no email — candidates can then be MX-validated.
+- **Configurable deep-scan concurrency** — `chrome.storage.local.deepScanConcurrency` (default 6) caps in-flight `_deepFetchPage` requests via a queue+slot pool, preventing storms when a SERP page yields dozens of links. Set to `0` for unlimited (legacy behaviour).
+
+#### Standalone CLI / Executable
+- **New `cli/paris.js`** — Node.js CLI that re-uses the same `EmailExtractor` module the browser extension uses (so detection/validation are bit-identical between channels). Subcommands:
+  - `extract <url|file>` — pull emails from a remote URL or local HTML/text file
+  - `search "<query>"` — DuckDuckGo HTML SERP scrape + parallel deep-scan
+  - `footprint "<name-substring>"` — run a built-in footprint by name match
+  - `list-footprints [filter]` — list all built-in footprints
+  - `permute <first> <last> <domain>` — generate corporate permutations
+  - `mx <email...>` — MX-validate via Node DNS
+- **Common flags**: `--out`, `--format json|csv|txt`, `--max-pages`, `--concurrency`, `--include-isp`, `--include-roles`, `--min-confidence`, `--domain`, `--mx`.
+- **`package.json`** with `pkg` configuration — `npm run build:exe` produces a single self-contained binary for Windows / macOS / Linux that embeds the JS sources + footprint list and runs without Node installed.
+- **No impact on the browser extension**: Manifest V3 bundle is unchanged; `package.json` and `cli/` are ignored by Chrome.
+
 ## [4.0.0] - 2026-05-02
 
 ### 🎉 Major Release: Complete Rebranding and Feature Overhaul

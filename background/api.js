@@ -50,6 +50,18 @@ var _builtinFootprints = [
     { name: "★ Data Platforms Combined", value: "(site:linkedin.com OR site:apollo.io OR site:zoominfo.com) \"@\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:linkedin.com OR site:apollo.io OR site:zoominfo.com) \"@\" \"contact\" -\"@gmail.com\" -\"@yahoo.com\"" },
     { name: "★ LinkedIn + Apollo Combined Search", value: "(site:linkedin.com/in/ OR site:apollo.io) \"@\" CEO OR \"chief executive\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:linkedin.com/in/ OR site:apollo.io) \"@\" \"founder\" OR \"co-founder\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:linkedin.com/in/ OR site:apollo.io) \"@\" VP OR \"vice president\" -\"@gmail.com\" -\"@yahoo.com\"" },
     { name: "★ Professional Network Profiles", value: "\"@\" \"linkedin.com/in/\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" \"about.me\" OR \"linktree\" -\"@gmail.com\" -\"@yahoo.com\"\n\"@\" \"angel.co\" OR \"crunchbase.com\" -\"@gmail.com\" -\"@yahoo.com\"" },
+
+    // ── ★ Additional B2B Data Platforms (extended coverage) ──
+    { name: "★ Crunchbase Profiles", value: "site:crunchbase.com/person/ \"@\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:crunchbase.com/organization/ \"@\" \"contact\" OR \"email\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ RocketReach Profiles", value: "site:rocketreach.co \"@\" \"email\" OR \"contact\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:rocketreach.co \"@\" \"profile\" OR \"people\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Lusha Contacts", value: "site:lusha.com \"@\" \"email\" OR \"contact\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Hunter.io Discovery", value: "site:hunter.io \"@\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:hunter.io/companies \"@\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Clearbit Profiles", value: "site:clearbit.com \"@\" -\"@gmail.com\" -\"@yahoo.com\"\nsite:connect.clearbit.com \"@\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ SignalHire Profiles", value: "site:signalhire.com \"@\" \"email\" OR \"contact\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Salesfully / Salesintel / Lead411", value: "(site:salesfully.com OR site:salesintel.com OR site:lead411.com) \"@\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ AngelList / Wellfound Founders", value: "(site:angel.co OR site:wellfound.com) \"@\" \"founder\" OR \"CEO\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ GitHub Public Email Leaks", value: "site:github.com \"@\" \"users.noreply.github.com\"\nsite:github.com/orgs \"@\" \"contact\" -\"@gmail.com\" -\"@yahoo.com\"" },
+    { name: "★ Extended Data Platforms Combined", value: "(site:crunchbase.com OR site:rocketreach.co OR site:lusha.com OR site:hunter.io OR site:clearbit.com OR site:signalhire.com) \"@\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:crunchbase.com OR site:rocketreach.co OR site:hunter.io) \"@\" CEO OR \"founder\" -\"@gmail.com\" -\"@yahoo.com\"\n(site:lusha.com OR site:clearbit.com OR site:signalhire.com) \"@\" \"contact\" OR \"email\" -\"@gmail.com\" -\"@yahoo.com\"" },
     
     // ── ★ Multi-Query Category Groups ──
     // These entries output multiple footprint lines, generating more query combinations

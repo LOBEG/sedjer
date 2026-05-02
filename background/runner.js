@@ -69,6 +69,43 @@ chrome.storage.local.get('removeDuplicates', function (items) {
     }
 })
 
+// ── Deep-scan concurrency ──────────────────────────────────────────────────
+// Controls how many _deepFetchPage requests may be in-flight simultaneously.
+// Default: 6 (a reasonable balance between throughput and being polite to
+// origin servers). 0 / negative / non-numeric ⇒ unlimited (legacy behaviour).
+serpdigger.runner.current.deepScanConcurrency = 6;
+chrome.storage.local.get('deepScanConcurrency', function (items) {
+    var n = items.deepScanConcurrency;
+    if (typeof n === 'number' && isFinite(n) && n >= 0) {
+        serpdigger.runner.current.deepScanConcurrency = n;
+    }
+});
+
+var _deepScanInFlight = 0;
+var _deepScanQueue = [];
+
+function _drainDeepScanQueue() {
+    var limit = serpdigger.runner.current.deepScanConcurrency;
+    while (_deepScanQueue.length > 0 &&
+           (!limit || limit <= 0 || _deepScanInFlight < limit)) {
+        var job = _deepScanQueue.shift();
+        _deepScanInFlight++;
+        // _deepFetchPage returns a Promise (always — see below).
+        Promise.resolve()
+            .then(function () { return _deepFetchPage(job.url, job.pattern, job.removeDuplicates); })
+            .catch(function () { /* errors are logged inside _deepFetchPage */ })
+            .then(function () {
+                _deepScanInFlight--;
+                _drainDeepScanQueue();
+            });
+    }
+}
+
+function _enqueueDeepFetch(url, pattern, removeDuplicates) {
+    _deepScanQueue.push({ url: url, pattern: pattern, removeDuplicates: removeDuplicates });
+    _drainDeepScanQueue();
+}
+
 chrome.runtime.onMessage.addListener(
     function (request, sender) {
         log.i('runtime.onMessage', request.eventName, sender);
@@ -106,7 +143,7 @@ chrome.runtime.onMessage.addListener(
             urls.forEach(function(url) {
                 if (serpdigger.runner.current.fetchedUrls.indexOf(url) !== -1) return;
                 serpdigger.runner.current.fetchedUrls.push(url);
-                _deepFetchPage(url, pattern, removeDupes);
+                _enqueueDeepFetch(url, pattern, removeDupes);
             });
         }
     }
@@ -168,7 +205,7 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
     var controller = new AbortController();
     var timeout = setTimeout(function() { controller.abort(); }, 20000);
 
-    fetch(url, {
+    return fetch(url, {
         signal: controller.signal,
         redirect: 'follow',
         headers: {

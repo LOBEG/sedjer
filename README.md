@@ -45,6 +45,7 @@ Paris Email Extractor is an advanced Chrome extension that discovers and extract
 7. [Account & Licensing](#account--licensing)
 8. [Project Structure](#project-structure)
 9. [Troubleshooting](#troubleshooting)
+10. [Standalone CLI / Executable](#standalone-cli--executable)
 
 ---
 
@@ -395,3 +396,82 @@ Popup                    Background                Content Script
 ## License
 
 This project is provided as-is. See the repository for any licensing information.
+
+---
+
+## Standalone CLI / Executable
+
+In addition to the browser extension, Paris Email Extractor ships with a
+standalone Node.js CLI that re-uses the **same** `EmailExtractor` module the
+extension uses, so detection and validation behaviour is identical between
+the two distribution channels. The CLI lives in [`cli/paris.js`](cli/paris.js)
+and depends only on Node ≥ 18 built-ins (no `npm install` required to run).
+
+### Run from source
+
+```bash
+node cli/paris.js --help
+node cli/paris.js extract https://example.com --format json
+node cli/paris.js search "site:linkedin.com/in/ \"@acme.com\"" --max-pages 3 --mx
+node cli/paris.js footprint "Apollo.io" --max-pages 2 --format csv --out leads.csv
+node cli/paris.js permute Jane Doe acme.com --mx
+node cli/paris.js mx jane.doe@acme.com info@acme.com
+node cli/paris.js list-footprints rocket
+```
+
+### Install globally as the `paris` command
+
+```bash
+npm install -g .
+paris --help
+```
+
+### Build a standalone executable (Windows / macOS / Linux)
+
+The repository's [`package.json`](package.json) contains a `pkg` configuration
+so you can produce a single, self-contained binary with no Node runtime
+dependency:
+
+```bash
+npm install -g pkg            # one-time
+npm run build:exe             # all default targets → dist/
+npm run build:exe:win         # Windows only
+npm run build:exe:mac         # macOS (x64 + arm64)
+npm run build:exe:linux       # Linux x64
+```
+
+The built binaries (e.g. `dist/paris-win-x64.exe`) embed the JS sources and
+the built-in footprint list, so they ship as a single file that runs anywhere
+without Node installed.
+
+### CLI commands
+
+| Command | What it does |
+|---|---|
+| `extract <url\|file>` | Pull emails from a URL or local HTML/text file |
+| `search "<query>"` | Search DuckDuckGo (HTML endpoint) and deep-scan results |
+| `footprint "<name-substring>"` | Run a built-in footprint by name match |
+| `list-footprints [filter]` | Print all built-in footprints (optionally filtered) |
+| `permute <first> <last> <domain>` | Generate corporate email permutations |
+| `mx <email...>` | MX-validate one or more email addresses |
+
+### Common options
+
+`--out <file>` · `--format json\|csv\|txt` · `--max-pages N` ·
+`--concurrency N` · `--include-isp` · `--include-roles` ·
+`--min-confidence N` · `--domain D` · `--mx`
+
+### What the CLI does (and doesn't) include
+
+- Reuses the **shared** `EmailExtractor` module — RFC 5322 + lenient + 5
+  obfuscated patterns + LinkedIn/Apollo/ZoomInfo platform patterns +
+  international (RFC 6531 / IDN) regex + ISP/role/disposable filters +
+  confidence scoring.
+- Reuses the same built-in footprint list as the extension (LinkedIn,
+  Apollo, ZoomInfo, Crunchbase, RocketReach, Lusha, Hunter.io, Clearbit,
+  SignalHire, AngelList, GitHub, plus 900+ role/industry footprints).
+- Configurable parallel-fetch concurrency for deep-scan.
+- Native MX validation via Node DNS (no DoH round-trip required).
+- The browser extension remains fully functional and unchanged — adding
+  `package.json` and the `cli/` directory has no effect on the Manifest V3
+  bundle that Chrome loads.

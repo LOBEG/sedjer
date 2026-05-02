@@ -32,6 +32,18 @@
     var LENIENT_EMAIL_REGEXP = /([a-zA-Z0-9!#$%&'*+\/=?^_`{|}~.-]+)\s{0,3}@\s{0,3}((?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\s{0,2}\.\s{0,2})+[a-zA-Z]{2,})/gi;
 
     /**
+     * International (Unicode / EAI) email regex.
+     * RFC 6531 allows non-ASCII characters in both the local part and the
+     * domain (e.g. "用户@例子.广告", "müller@straße.de"). The standard regex
+     * above is ASCII-only, so this additional pattern picks up internationalised
+     * addresses that the strict regex would miss. Punycode (xn--) hosts are
+     * already covered by the standard regex.
+     *
+     * Uses Unicode property escapes (supported in all Chromium/Node ≥ 12).
+     */
+    var INTL_EMAIL_REGEXP = /([\p{L}\p{N}!#$%&'*+\/=?^_`{|}~.-]+)@((?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+[\p{L}]{2,})/giu;
+
+    /**
      * Obfuscated email patterns commonly used to avoid scraping
      * Examples: "user [at] domain [dot] com", "user(at)domain(dot)com", "user AT domain DOT com"
      */
@@ -356,6 +368,24 @@
             }
         }
 
+        // 2b. International (Unicode / RFC 6531) pattern.
+        // Picks up addresses with non-ASCII local parts or IDN domains that the
+        // strict ASCII regex skips. We only run it if the text actually
+        // contains non-ASCII characters AND an "@" — otherwise it adds nothing.
+        if (/[^\x00-\x7F]/.test(text) && text.indexOf('@') !== -1) {
+            try {
+                INTL_EMAIL_REGEXP.lastIndex = 0;
+                while ((match = INTL_EMAIL_REGEXP.exec(text)) !== null) {
+                    addEmail(match[0], 'international', -5);
+                    if (match.index === INTL_EMAIL_REGEXP.lastIndex) {
+                        INTL_EMAIL_REGEXP.lastIndex++;
+                    }
+                }
+            } catch (e) {
+                // Older runtimes without Unicode property escape support — skip.
+            }
+        }
+
         // 3. Obfuscated patterns
         OBFUSCATED_PATTERNS.forEach(function(pattern) {
             pattern.lastIndex = 0;
@@ -520,6 +550,86 @@
     EmailExtractor.ROLE_PREFIXES = ROLE_PREFIXES;
     EmailExtractor.validateEmail = validateEmail;
     EmailExtractor.normalizeObfuscatedEmail = normalizeObfuscatedEmail;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Permutation Generator
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Generate the most-common corporate email permutations for a given person
+     * + domain (e.g. firstname.lastname@acme.com, flastname@acme.com, …).
+     *
+     * This is useful when discovery surfaces a name (e.g. on a LinkedIn /
+     * Apollo / ZoomInfo profile) but no email — the resulting candidates can
+     * then be MX-validated by `serpdigger.validateEmails` to find the address
+     * actually used by the company.
+     *
+     * @param {string} firstName e.g. "Jane"
+     * @param {string} lastName  e.g. "O'Connor"
+     * @param {string} domain    e.g. "acme.com" (with or without leading "@")
+     * @param {Object} [options]
+     * @param {string} [options.middleName]
+     * @param {boolean} [options.includeUnusual=false] also emit reversed/dotted/
+     *        rare permutations
+     * @returns {string[]} unique, lowercase candidate addresses
+     */
+    EmailExtractor.generatePermutations = function (firstName, lastName, domain, options) {
+        options = options || {};
+        if (!domain) return [];
+        // Normalise inputs.
+        function norm(s) {
+            if (!s || typeof s !== 'string') return '';
+            // Strip diacritics, then drop anything that isn't a letter/digit.
+            var stripped = s.normalize ? s.normalize('NFD').replace(/[\u0300-\u036f]/g, '') : s;
+            return stripped.toLowerCase().replace(/[^a-z0-9]/g, '');
+        }
+        var f  = norm(firstName);
+        var l  = norm(lastName);
+        var mi = norm(options.middleName).charAt(0);
+        var d  = String(domain).trim().toLowerCase().replace(/^@/, '');
+        if (!d || d.indexOf('.') === -1) return [];
+        if (!f && !l) return [];
+
+        var fi = f.charAt(0);
+        var li = l.charAt(0);
+        var locals = [];
+
+        function add(local) {
+            if (local && locals.indexOf(local) === -1) locals.push(local);
+        }
+
+        // Most common corporate patterns (covers ~95% of real-world domains).
+        if (f && l) {
+            add(f + '.' + l);          // jane.oconnor
+            add(f + l);                // janeoconnor
+            add(f + '_' + l);          // jane_oconnor
+            add(f + '-' + l);          // jane-oconnor
+            add(fi + l);               // joconnor
+            add(fi + '.' + l);         // j.oconnor
+            add(f + li);               // janeo
+            add(f + '.' + li);         // jane.o
+            add(l + '.' + f);          // oconnor.jane
+            add(l + f);                // oconnorjane
+            add(li + f);               // ojane
+            add(l + fi);               // oconnorj
+        }
+        if (f) add(f);                 // jane
+        if (l) add(l);                 // oconnor
+
+        if (options.includeUnusual && f && l) {
+            add(fi + li);              // jo
+            add(f + '.' + l + fi);     // jane.oconnorj (rare)
+            if (mi) {
+                add(f + mi + l);       // janemoconnor
+                add(f + '.' + mi + '.' + l); // jane.m.oconnor
+                add(fi + mi + l);      // jmoconnor
+            }
+        }
+
+        return locals
+            .filter(function (lp) { return lp.length > 0 && lp.length <= 64; })
+            .map(function (lp) { return lp + '@' + d; });
+    };
 
     // Export to global scope (works in both `window` and service-worker `self`)
     globalScope.EmailExtractor = EmailExtractor;
