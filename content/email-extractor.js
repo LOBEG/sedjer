@@ -147,12 +147,12 @@
     ];
 
     /**
-     * Test domains and placeholders
+     * Test domains and placeholders (not mail.com which is a real provider)
      */
     var TEST_DOMAINS = {
         'example.com': 1, 'example.org': 1, 'example.net': 1,
         'test.com': 1, 'localhost': 1, 'domain.com': 1,
-        'email.com': 1, 'mail.com': 1, 'company.com': 1,
+        'email.com': 1, 'company.com': 1,
         'yourcompany.com': 1, 'yourdomain.com': 1,
         'sentry.io': 1, 'wixpress.com': 1
     };
@@ -333,13 +333,21 @@
         EMAIL_REGEXP.lastIndex = 0;
         while ((match = EMAIL_REGEXP.exec(text)) !== null) {
             addEmail(match[0], 'standard', 0);
+            // Prevent infinite loop on zero-length matches
+            if (match.index === EMAIL_REGEXP.lastIndex) {
+                EMAIL_REGEXP.lastIndex++;
+            }
         }
 
         // 2. Lenient pattern (with whitespace tolerance)
         LENIENT_EMAIL_REGEXP.lastIndex = 0;
         while ((match = LENIENT_EMAIL_REGEXP.exec(text)) !== null) {
-            var email = match[1] + '@' + match[2].replace(/\s+/g, '');
+            var email = match[1].replace(/\s+/g, '') + '@' + match[2].replace(/\s+/g, '');
             addEmail(email, 'lenient', -5);
+            // Prevent infinite loop on zero-length matches
+            if (match.index === LENIENT_EMAIL_REGEXP.lastIndex) {
+                LENIENT_EMAIL_REGEXP.lastIndex++;
+            }
         }
 
         // 3. Obfuscated patterns
@@ -452,19 +460,36 @@
     EmailExtractor.detectPlatform = function(url) {
         if (!url) return { platform: 'generic', isDataPlatform: false };
 
-        url = url.toLowerCase();
-
-        if (url.indexOf('linkedin.com') > -1) {
-            return { platform: 'linkedin', isLinkedIn: true, isDataPlatform: false };
-        }
-        if (url.indexOf('apollo.io') > -1) {
-            return { platform: 'apollo', isLinkedIn: false, isDataPlatform: true };
-        }
-        if (url.indexOf('zoominfo.com') > -1) {
-            return { platform: 'zoominfo', isLinkedIn: false, isDataPlatform: true };
-        }
-        if (url.indexOf('hunter.io') > -1) {
-            return { platform: 'hunter', isLinkedIn: false, isDataPlatform: true };
+        try {
+            // Parse URL properly to check hostname
+            var urlObj = new URL(url.toLowerCase());
+            var hostname = urlObj.hostname;
+            
+            // Check if hostname ends with the platform domain (not just contains)
+            if (hostname === 'linkedin.com' || hostname.endsWith('.linkedin.com')) {
+                return { platform: 'linkedin', isLinkedIn: true, isDataPlatform: false };
+            }
+            if (hostname === 'apollo.io' || hostname.endsWith('.apollo.io')) {
+                return { platform: 'apollo', isLinkedIn: false, isDataPlatform: true };
+            }
+            if (hostname === 'zoominfo.com' || hostname.endsWith('.zoominfo.com')) {
+                return { platform: 'zoominfo', isLinkedIn: false, isDataPlatform: true };
+            }
+            if (hostname === 'hunter.io' || hostname.endsWith('.hunter.io')) {
+                return { platform: 'hunter', isLinkedIn: false, isDataPlatform: true };
+            }
+        } catch (e) {
+            // Invalid URL, fall back to string matching as last resort
+            url = url.toLowerCase();
+            if (url.indexOf('//linkedin.com') > -1 || url.indexOf('.linkedin.com') > -1) {
+                return { platform: 'linkedin', isLinkedIn: true, isDataPlatform: false };
+            }
+            if (url.indexOf('//apollo.io') > -1 || url.indexOf('.apollo.io') > -1) {
+                return { platform: 'apollo', isLinkedIn: false, isDataPlatform: true };
+            }
+            if (url.indexOf('//zoominfo.com') > -1 || url.indexOf('.zoominfo.com') > -1) {
+                return { platform: 'zoominfo', isLinkedIn: false, isDataPlatform: true };
+            }
         }
 
         return { platform: 'generic', isDataPlatform: false };

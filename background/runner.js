@@ -288,7 +288,17 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         }
 
         // 5. Extract from LinkedIn profile patterns
-        if (url.indexOf('linkedin.com') > -1) {
+        var isLinkedIn = false;
+        try {
+            var urlObj = new URL(url);
+            var hostname = urlObj.hostname.toLowerCase();
+            isLinkedIn = (hostname === 'linkedin.com' || hostname.endsWith('.linkedin.com'));
+        } catch (e) {
+            // Fallback to string check
+            isLinkedIn = (url.toLowerCase().indexOf('//linkedin.com') > -1 || url.toLowerCase().indexOf('.linkedin.com') > -1);
+        }
+        
+        if (isLinkedIn) {
             var linkedinRe = /(?:email|contact)[:\s]+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
             var linkedinMatch;
             while ((linkedinMatch = linkedinRe.exec(html)) !== null) {
