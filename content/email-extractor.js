@@ -487,9 +487,10 @@
         if (!url) return { platform: 'generic', isDataPlatform: false };
 
         try {
-            // Parse URL properly to check hostname
-            var urlObj = new URL(url.toLowerCase());
-            var hostname = urlObj.hostname;
+            // Parse URL first (preserve case for path/query), then lowercase
+            // hostname only. URL hostnames are case-insensitive per RFC 3986.
+            var urlObj = new URL(url);
+            var hostname = urlObj.hostname.toLowerCase();
             
             // Check if hostname ends with the platform domain (not just contains)
             if (hostname === 'linkedin.com' || hostname.endsWith('.linkedin.com')) {
