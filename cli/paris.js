@@ -249,7 +249,7 @@ function extractFromHtml(html, urlForPlatform, filterOptions) {
         isDataPlatform: !!platformInfo.isDataPlatform
     });
     var filtered = EmailExtractor.filterEmails(extracted, filterOptions || {
-        minConfidence: 30,
+        minConfidence: 0,
         excludeRoles: true,
         excludeISP: true
     });
@@ -349,14 +349,62 @@ function formatOutput(records, fmt) {
     return records.map(function (r) { return r.email; }).join('\n');
 }
 
-function writeOutput(text, outFile) {
+// Resolve the user's Desktop folder for the current OS, with sensible
+// fallbacks when it doesn't exist (headless runners, locked-down
+// containers, etc.). Returns an absolute path that is guaranteed to be
+// writable, falling back to the home directory and finally CWD.
+function resolveDesktopPath() {
+    var home = process.env.HOME || process.env.USERPROFILE || '';
+    var candidates = [];
+    if (home) {
+        candidates.push(path.join(home, 'Desktop'));
+        // OneDrive / localised Desktop on Windows
+        if (process.env.OneDrive) candidates.push(path.join(process.env.OneDrive, 'Desktop'));
+        if (process.env.USERPROFILE) candidates.push(path.join(process.env.USERPROFILE, 'OneDrive', 'Desktop'));
+    }
+    for (var i = 0; i < candidates.length; i++) {
+        try {
+            if (fs.existsSync(candidates[i]) && fs.statSync(candidates[i]).isDirectory()) {
+                return candidates[i];
+            }
+        } catch (e) { /* try next */ }
+    }
+    // Try to create ~/Desktop if it doesn't exist
+    if (home) {
+        try {
+            var p = path.join(home, 'Desktop');
+            fs.mkdirSync(p, { recursive: true });
+            return p;
+        } catch (e) { /* fall through */ }
+    }
+    return home || process.cwd();
+}
+
+// Build a default desktop filename for a given command + format.
+function defaultDesktopFilename(command, fmt) {
+    var ext = (fmt === 'json' || fmt === 'csv' || fmt === 'txt') ? fmt : 'txt';
+    var ts = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+    return 'paris-' + (command || 'leads') + '-' + ts + '.' + ext;
+}
+
+function writeOutput(text, outFile, opts) {
+    opts = opts || {};
+    // --desktop wins over --out=null but loses to an explicit --out.
+    if (!outFile && opts.desktop) {
+        outFile = path.join(resolveDesktopPath(), defaultDesktopFilename(opts.command, opts.fmt));
+    }
     if (outFile) {
+        try {
+            var dir = path.dirname(outFile);
+            if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        } catch (e) { /* let writeFileSync produce the real error */ }
         fs.writeFileSync(outFile, text, 'utf8');
         process.stderr.write('Wrote ' + outFile + '\n');
     } else {
         process.stdout.write(text);
         if (!text.endsWith('\n')) process.stdout.write('\n');
     }
+    return outFile || null;
 }
 
 // ── Country → TLD map (ISO 3166-1 alpha-2 → primary ccTLD list) ────────────
@@ -650,7 +698,7 @@ function cmdExtract(args) {
     var fmt   = args.flags.format || 'txt';
     var out   = args.flags.out;
     var filterOpts = {
-        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : 30,
+        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : (args.flags.strict ? 30 : 0),
         excludeISP:    !args.flags['include-isp'],
         excludeRoles:  !args.flags['include-roles']
     };
@@ -681,7 +729,7 @@ function cmdExtract(args) {
             var filtered = applyHistoryFilter(records, historyOpts);
             recordHistory(filtered, { command: 'extract' });
             process.stderr.write('Found ' + filtered.length + ' email(s)' + (extraNote || '') + '\n');
-            writeOutput(formatOutput(filtered, fmt), out);
+            writeOutput(formatOutput(filtered, fmt), out, { fmt: fmt, command: 'extract', desktop: !!args.flags.desktop });
         }
 
         if (followContact && page.src) {
@@ -705,7 +753,7 @@ function cmdSearch(args) {
     var fmt = args.flags.format || 'txt';
     var out = args.flags.out;
     var filterOpts = {
-        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : 30,
+        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : (args.flags.strict ? 30 : 0),
         excludeISP:    !args.flags['include-isp'],
         excludeRoles:  !args.flags['include-roles']
     };
@@ -774,7 +822,7 @@ function cmdSearch(args) {
             return allRecords;
         });
     }).then(function (records) {
-        writeOutput(formatOutput(records, fmt), out);
+        writeOutput(formatOutput(records, fmt), out, { fmt: fmt, command: 'search', desktop: !!args.flags.desktop });
     });
 }
 
@@ -822,7 +870,7 @@ function cmdFootprint(args) {
         collected = applyHistoryFilter(collected, historyOpts);
         recordHistory(collected, { command: 'footprint', footprint: match.name });
         var fmt = args.flags.format || 'txt';
-        writeOutput(formatOutput(collected, fmt), args.flags.out);
+        writeOutput(formatOutput(collected, fmt), args.flags.out, { fmt: fmt, command: 'footprint', desktop: !!args.flags.desktop });
     });
 }
 
@@ -834,7 +882,7 @@ function runSearchInternal(args) {
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
     var concurrency = args.flags.concurrency != null ? parseInt(args.flags.concurrency, 10) : 6;
     var filterOpts = {
-        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : 30,
+        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : (args.flags.strict ? 30 : 0),
         excludeISP:    !args.flags['include-isp'],
         excludeRoles:  !args.flags['include-roles']
     };
@@ -885,19 +933,19 @@ function cmdPermute(args) {
         includeUnusual: !!args.flags.unusual
     });
     if (!args.flags.mx) {
-        writeOutput(perms.join('\n'), args.flags.out);
+        writeOutput(perms.join('\n'), args.flags.out, { fmt: 'txt', command: 'permute', desktop: !!args.flags.desktop });
         return Promise.resolve();
     }
     return validateEmailMx(perms).then(function (mx) {
         var rec = perms.map(function (e) { return { email: e, mxValid: mx.valid.indexOf(e) !== -1 }; });
         var fmt = args.flags.format || 'txt';
-        writeOutput(formatOutput(rec.filter(function (r) { return r.mxValid; }), fmt), args.flags.out);
+        writeOutput(formatOutput(rec.filter(function (r) { return r.mxValid; }), fmt), args.flags.out, { fmt: fmt, command: 'permute', desktop: !!args.flags.desktop });
     });
 }
 
 function cmdMx(args) {
     if (args.pos.length === 0) {
-        console.error('usage: paris mx <email> [<email> ...] [--out F] [--format json|csv|txt]');
+        console.error('usage: paris mx <email> [<email> ...] [--out F] [--format json|csv|txt] [--desktop]');
         process.exit(1);
     }
     var concurrency = args.flags.concurrency != null ? parseInt(args.flags.concurrency, 10) : 8;
@@ -905,9 +953,9 @@ function cmdMx(args) {
         var rec = args.pos.map(function (e) { return { email: e, mxValid: mx.valid.indexOf(e) !== -1 }; });
         var fmt = args.flags.format || 'txt';
         if (fmt === 'txt') {
-            writeOutput(rec.map(function (r) { return (r.mxValid ? '[ok] ' : '[--] ') + r.email; }).join('\n'), args.flags.out);
+            writeOutput(rec.map(function (r) { return (r.mxValid ? '[ok] ' : '[--] ') + r.email; }).join('\n'), args.flags.out, { fmt: 'txt', command: 'mx', desktop: !!args.flags.desktop });
         } else {
-            writeOutput(formatOutput(rec, fmt), args.flags.out);
+            writeOutput(formatOutput(rec, fmt), args.flags.out, { fmt: fmt, command: 'mx', desktop: !!args.flags.desktop });
         }
     });
 }
@@ -964,16 +1012,17 @@ function cmdHistory(args) {
     }
     if (sub === 'list') {
         var fmt = args.flags.format || 'txt';
-        if (fmt === 'json') writeOutput(JSON.stringify(entries, null, 2), args.flags.out);
+        var listOpts = { fmt: fmt, command: 'history-list', desktop: !!args.flags.desktop };
+        if (fmt === 'json') writeOutput(JSON.stringify(entries, null, 2), args.flags.out, listOpts);
         else if (fmt === 'csv') {
             var lines = ['email,firstSeen,lastSeen,sourceUrl,footprint,command'];
             entries.forEach(function (r) {
                 var safe = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
                 lines.push([safe(r.email), safe(r.firstSeen), safe(r.lastSeen), safe(r.sourceUrl), safe(r.footprint), safe(r.command)].join(','));
             });
-            writeOutput(lines.join('\n'), args.flags.out);
+            writeOutput(lines.join('\n'), args.flags.out, listOpts);
         } else {
-            writeOutput(entries.map(function (r) { return r.email; }).join('\n'), args.flags.out);
+            writeOutput(entries.map(function (r) { return r.email; }).join('\n'), args.flags.out, listOpts);
         }
         return Promise.resolve();
     }
@@ -1011,29 +1060,38 @@ function cmdHistory(args) {
 // ── Help ────────────────────────────────────────────────────────────────────
 function help() {
     process.stdout.write([
-        'Paris Email Extractor — standalone CLI',
+        'Paris Email Extractor — standalone CLI v' + PARIS_VERSION,
+        '',
+        'TIP: Run with no arguments (or double-click the .exe) to launch the',
+        '     INTERACTIVE MENU — every feature is listed on screen, no need to',
+        '     remember commands.',
         '',
         'USAGE',
-        '  paris <command> [options]',
+        '  paris                       Launch interactive menu (recommended)',
+        '  paris menu                  Same as above (explicit form)',
+        '  paris <command> [options]   Run a single command non-interactively',
         '',
         'COMMANDS',
         '  extract <url|file>          Pull emails from a remote URL or local HTML/text file',
         '  search  "<query>"           Run a DuckDuckGo search and deep-scan results',
         '  footprint "<name-match>"    Run a built-in footprint by name substring',
-        '  list-footprints [filter]    List all built-in footprints',
+        '  list-footprints [filter]    List all built-in footprints (1062+ entries)',
         '  permute <first> <last> <d>  Generate corporate email permutations',
         '  mx <email...>               MX-validate one or more email addresses',
         '  history [stats|list|export FILE|clear --yes]',
         '                              Manage the persistent extraction history',
+        '  menu | interactive          Launch the interactive menu',
         '',
         'COMMON OPTIONS',
         '  --out <file>            Write to file instead of stdout',
+        '  --desktop               Save results to your Desktop with a timestamped filename',
         '  --format json|csv|txt   Output format (default: txt)',
         '  --max-pages N           Search engine pages to crawl (default: 2)',
         '  --concurrency N         Parallel fetch concurrency (default: 6)',
         '  --include-isp           Keep ISP/webmail addresses in results',
         '  --include-roles         Keep role-based addresses (info@, sales@…)',
-        '  --min-confidence N      Drop emails below this confidence (default: 30)',
+        '  --min-confidence N      Drop emails below this confidence (default: 0 — keep everything)',
+        '  --strict                Shortcut for --min-confidence 30 (the v4.2 default)',
         '  --domain D              Restrict results to a specific domain',
         '  --country CC            Restrict to a country\'s ccTLD (ISO 3166-1 alpha-2,',
         '                          e.g. US, GB, DE, FR, BR, IN, JP, AE, ZA …)',
@@ -1052,30 +1110,484 @@ function help() {
         '  --before YYYY-MM-DD     Search-engine `before:` operator',
         '',
         'EXAMPLES',
-        '  paris extract https://example.com --follow-contact',
-        '  paris search "site:linkedin.com/in/ \\"@acme.com\\"" --country GB --mx',
-        '  paris footprint "Apollo.io" --country DE --max-pages 3 --format csv --out leads.csv',
-        '  paris footprint "Lead Platform: Facebook Pages" --after 2025-01-01',
-        '  paris footprint "Country: Germany"',
-        '  paris permute Jane Doe acme.com --mx',
-        '  paris mx jane.doe@acme.com info@acme.com',
+        '  paris                                                       # interactive menu',
+        '  paris extract https://example.com --follow-contact --desktop',
+        '  paris search "site:linkedin.com/in/ \\"@acme.com\\"" --country GB --mx --desktop',
+        '  paris footprint "Apollo.io" --country DE --max-pages 3 --format csv --desktop',
+        '  paris footprint "Lead Platform: Facebook Pages" --after 2025-01-01 --desktop',
+        '  paris permute Jane Doe acme.com --mx --desktop',
+        '  paris mx jane.doe@acme.com info@acme.com --desktop',
         '  paris history stats',
-        '  paris history list --format csv --out seen.csv',
-        '  paris history clear --yes',
         ''
     ].join('\n'));
 }
 
+// ── Interactive menu ────────────────────────────────────────────────────────
+// When the program is launched with no arguments (e.g. by double-clicking
+// the .exe on Windows) we show a numbered menu so the user never has to
+// remember a command. Every feature is reachable from the menu, every
+// prompt has a sensible default, and at the end of every action the user
+// is offered "Save results to Desktop?" before returning to the main menu.
+//
+// We build our own line-event reader rather than using rl.question() so
+// that it works reliably both on a real TTY (Windows .exe double-click)
+// and with piped stdin (smoke tests, scripts).
+function _readline() {
+    var rl = require('readline').createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: !!process.stdin.isTTY
+    });
+    var pending = null;       // resolver awaiting next line
+    var buffered = [];        // lines that arrived before a pending resolver
+    var closed = false;
+    rl.on('line', function (line) {
+        if (pending) { var r = pending; pending = null; r(line); }
+        else buffered.push(line);
+    });
+    rl.on('close', function () {
+        closed = true;
+        if (pending) { var r = pending; pending = null; r(''); }
+    });
+    return {
+        question: function (prompt) {
+            process.stdout.write(prompt);
+            return new Promise(function (resolve) {
+                if (buffered.length) resolve(buffered.shift());
+                else if (closed) resolve('');
+                else pending = resolve;
+            });
+        },
+        close: function () { rl.close(); }
+    };
+}
+
+function _ask(rl, question, defaultValue) {
+    var prompt = question;
+    if (defaultValue !== undefined && defaultValue !== '' && defaultValue !== null) {
+        prompt += ' [' + defaultValue + ']';
+    }
+    prompt += ': ';
+    return rl.question(prompt).then(function (ans) {
+        ans = String(ans == null ? '' : ans).trim();
+        if (ans === '' && defaultValue !== undefined) {
+            return String(defaultValue);
+        }
+        return ans;
+    });
+}
+
+function _askYesNo(rl, question, defaultYes) {
+    var hint = defaultYes ? 'Y/n' : 'y/N';
+    return _ask(rl, question + ' [' + hint + ']', '').then(function (ans) {
+        if (!ans) return !!defaultYes;
+        return /^y(es)?$/i.test(ans.trim());
+    });
+}
+
+function _printBanner() {
+    var line = '═'.repeat(72);
+    process.stdout.write([
+        '',
+        line,
+        '  PARIS EMAIL EXTRACTOR  •  v' + PARIS_VERSION + '  •  ' + BUILTIN_FOOTPRINTS.length + ' built-in footprints',
+        '  Lead-gen extractor with persistent skip-seen history & deep-DB mode',
+        line,
+        ''
+    ].join('\n'));
+}
+
+function _printMenu() {
+    process.stdout.write([
+        'Choose what to do (type the number, then Enter):',
+        '',
+        '  1)  Extract emails from a URL or local file',
+        '  2)  Search the web for emails (DuckDuckGo)',
+        '  3)  Run a built-in footprint  (Facebook, LinkedIn, Apollo, ZoomInfo,',
+        '                                 RocketReach, Wellfound, country-targeted, …)',
+        '  4)  Browse / list all built-in footprints',
+        '  5)  Generate corporate email permutations (first + last + domain)',
+        '  6)  MX-validate a list of emails',
+        '  7)  Persistent history  (stats / list / export / clear)',
+        '  8)  Settings & defaults  (skip-seen, strict mode, default country, save folder)',
+        '  9)  Show full feature reference',
+        '  0)  Exit',
+        ''
+    ].join('\n'));
+}
+
+// Per-session settings that persist between menu actions.
+var INTERACTIVE_SETTINGS = {
+    saveToDesktop: true,
+    strict: false,
+    skipSeen: true,
+    country: '',
+    followContact: true,
+    maxPages: 3,
+    minConfidence: null,    // null = use default rule
+    saveFolder: ''           // '' = Desktop
+};
+
+function _commonFlagsFromSettings(extra) {
+    var f = {};
+    if (INTERACTIVE_SETTINGS.strict) f.strict = true;
+    if (INTERACTIVE_SETTINGS.minConfidence != null) f['min-confidence'] = INTERACTIVE_SETTINGS.minConfidence;
+    if (INTERACTIVE_SETTINGS.country) f.country = INTERACTIVE_SETTINGS.country;
+    if (!INTERACTIVE_SETTINGS.skipSeen) f['no-skip-seen'] = true;
+    if (extra) Object.keys(extra).forEach(function (k) { f[k] = extra[k]; });
+    return f;
+}
+
+// Captures the next writeOutput() call so the menu can offer "save to Desktop"
+// after the command has finished. We override the global function for the
+// duration of one action and restore it afterwards.
+function _captureOutput(action) {
+    var captured = { text: null, command: null, fmt: 'txt' };
+    var original = writeOutput;
+    writeOutput = function (text, outFile, opts) {
+        opts = opts || {};
+        captured.text = text;
+        captured.command = opts.command || captured.command;
+        captured.fmt = opts.fmt || captured.fmt;
+        // If the user passed --out / --desktop explicitly, write it now too;
+        // otherwise just stash the text so the menu can prompt the user.
+        if (outFile || opts.desktop) {
+            return original(text, outFile, opts);
+        }
+        // Echo the result to the screen so the user can see it
+        process.stdout.write(text);
+        if (!String(text).endsWith('\n')) process.stdout.write('\n');
+        return null;
+    };
+    return Promise.resolve()
+        .then(action)
+        .then(function (v) { writeOutput = original; return { result: v, captured: captured }; },
+              function (e) { writeOutput = original; throw e; });
+}
+
+function _afterAction(rl, captured) {
+    if (!captured || captured.text == null) return Promise.resolve();
+    return _askYesNo(rl, 'Save these results to your Desktop?', INTERACTIVE_SETTINGS.saveToDesktop)
+        .then(function (yes) {
+            if (!yes) return;
+            var folder = INTERACTIVE_SETTINGS.saveFolder || resolveDesktopPath();
+            var fname = defaultDesktopFilename(captured.command || 'leads', captured.fmt || 'txt');
+            var full = path.join(folder, fname);
+            try {
+                if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+                fs.writeFileSync(full, captured.text, 'utf8');
+                process.stdout.write('  ✔ Saved to ' + full + '\n');
+            } catch (e) {
+                process.stdout.write('  ✗ Failed to save: ' + e.message + '\n');
+            }
+        });
+}
+
+// ── Menu actions ────────────────────────────────────────────────────────────
+function _menuExtract(rl) {
+    return _ask(rl, 'URL or local file path').then(function (target) {
+        if (!target) return;
+        return _askYesNo(rl, 'Also crawl /contact, /about, /team sub-pages? (slower, finds more)', INTERACTIVE_SETTINGS.followContact)
+            .then(function (followContact) {
+                var fmt;
+                return _ask(rl, 'Output format (txt/csv/json)', 'csv').then(function (f) {
+                    fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'csv';
+                    return _captureOutput(function () {
+                        var args = { pos: [target], flags: _commonFlagsFromSettings({ format: fmt }) };
+                        if (followContact) args.flags['follow-contact'] = true;
+                        return cmdExtract(args);
+                    });
+                }).then(function (out) { return _afterAction(rl, out.captured); });
+            });
+    });
+}
+
+function _menuSearch(rl) {
+    return _ask(rl, 'Search query (e.g. \'site:linkedin.com/in/ "@acme.com"\')').then(function (q) {
+        if (!q) return;
+        return _ask(rl, 'How many search-engine pages to crawl?', String(INTERACTIVE_SETTINGS.maxPages)).then(function (mp) {
+            return _askYesNo(rl, 'Also crawl /contact, /about sub-pages of every result?', INTERACTIVE_SETTINGS.followContact)
+                .then(function (followContact) {
+                    return _askYesNo(rl, 'MX-validate every result before saving?', false).then(function (mx) {
+                        return _ask(rl, 'Output format (txt/csv/json)', 'csv').then(function (f) {
+                            var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'csv';
+                            return _captureOutput(function () {
+                                var args = { pos: [q], flags: _commonFlagsFromSettings({
+                                    format: fmt,
+                                    'max-pages': parseInt(mp, 10) || INTERACTIVE_SETTINGS.maxPages
+                                }) };
+                                if (followContact) args.flags['follow-contact'] = true;
+                                if (mx) args.flags.mx = true;
+                                return cmdSearch(args);
+                            }).then(function (out) { return _afterAction(rl, out.captured); });
+                        });
+                    });
+                });
+        });
+    });
+}
+
+function _menuFootprint(rl) {
+    return _ask(rl, 'Footprint name to match (e.g. "Facebook", "Apollo", "Country: Germany")')
+        .then(function (name) {
+            if (!name) return;
+            var matches = BUILTIN_FOOTPRINTS.filter(function (f) {
+                return String(f.name).toLowerCase().indexOf(name.toLowerCase()) !== -1;
+            });
+            if (matches.length === 0) {
+                process.stdout.write('  No footprint matched "' + name + '". Try option 4 to browse.\n');
+                return;
+            }
+            if (matches.length > 1) {
+                process.stdout.write('  Matched ' + matches.length + ' footprint(s):\n');
+                matches.slice(0, 20).forEach(function (m, i) {
+                    process.stdout.write('    [' + (i + 1) + '] ' + m.name + '\n');
+                });
+                if (matches.length > 20) process.stdout.write('    … and ' + (matches.length - 20) + ' more (refine your search)\n');
+                return _ask(rl, 'Pick number (or Enter to use the first match)', '1').then(function (n) {
+                    var idx = parseInt(n, 10) - 1;
+                    if (isNaN(idx) || idx < 0 || idx >= Math.min(matches.length, 20)) idx = 0;
+                    return _runFootprint(rl, matches[idx]);
+                });
+            }
+            return _runFootprint(rl, matches[0]);
+        });
+}
+
+function _runFootprint(rl, match) {
+    process.stdout.write('  → Selected: ' + match.name + '\n');
+    return _ask(rl, 'How many search-engine pages to crawl per query?', String(INTERACTIVE_SETTINGS.maxPages)).then(function (mp) {
+        return _askYesNo(rl, 'Also crawl /contact, /about sub-pages?', INTERACTIVE_SETTINGS.followContact).then(function (followContact) {
+            return _askYesNo(rl, 'MX-validate every result?', false).then(function (mx) {
+                return _ask(rl, 'Output format (txt/csv/json)', 'csv').then(function (f) {
+                    var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'csv';
+                    return _captureOutput(function () {
+                        var args = { pos: [match.name], flags: _commonFlagsFromSettings({
+                            format: fmt,
+                            'max-pages': parseInt(mp, 10) || INTERACTIVE_SETTINGS.maxPages
+                        }) };
+                        if (followContact) args.flags['follow-contact'] = true;
+                        if (mx) args.flags.mx = true;
+                        return cmdFootprint(args);
+                    }).then(function (out) { return _afterAction(rl, out.captured); });
+                });
+            });
+        });
+    });
+}
+
+function _menuListFootprints(rl) {
+    return _ask(rl, 'Filter substring (Enter to list all ' + BUILTIN_FOOTPRINTS.length + ')', '').then(function (filter) {
+        var rows = BUILTIN_FOOTPRINTS;
+        if (filter) {
+            var f = filter.toLowerCase();
+            rows = rows.filter(function (r) { return String(r.name).toLowerCase().indexOf(f) !== -1; });
+        }
+        process.stdout.write('  ' + rows.length + ' footprint(s):\n');
+        var pageSize = 30;
+        var page = 0;
+        function showPage() {
+            var slice = rows.slice(page * pageSize, (page + 1) * pageSize);
+            slice.forEach(function (r, i) {
+                process.stdout.write('    [' + (page * pageSize + i + 1) + '] ' + r.name + '\n');
+            });
+            var more = (page + 1) * pageSize < rows.length;
+            if (!more) return Promise.resolve();
+            return _askYesNo(rl, 'Show next ' + pageSize + '?', true).then(function (yes) {
+                if (!yes) return;
+                page++;
+                return showPage();
+            });
+        }
+        return showPage();
+    });
+}
+
+function _menuPermute(rl) {
+    return _ask(rl, 'First name').then(function (first) {
+        if (!first) return;
+        return _ask(rl, 'Last name').then(function (last) {
+            if (!last) return;
+            return _ask(rl, 'Domain (e.g. acme.com)').then(function (dom) {
+                if (!dom) return;
+                return _ask(rl, 'Middle name (optional)', '').then(function (mid) {
+                    return _askYesNo(rl, 'Include unusual permutations?', false).then(function (unusual) {
+                        return _askYesNo(rl, 'MX-validate and keep only valid?', true).then(function (mx) {
+                            return _ask(rl, 'Output format (txt/csv/json)', 'txt').then(function (f) {
+                                var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'txt';
+                                return _captureOutput(function () {
+                                    var args = { pos: [first, last, dom], flags: { format: fmt } };
+                                    if (mid) args.flags.middle = mid;
+                                    if (unusual) args.flags.unusual = true;
+                                    if (mx) args.flags.mx = true;
+                                    return cmdPermute(args);
+                                }).then(function (out) { return _afterAction(rl, out.captured); });
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    });
+}
+
+function _menuMx(rl) {
+    return _ask(rl, 'Email(s) to validate (space- or comma-separated)').then(function (line) {
+        if (!line) return;
+        var emails = line.split(/[\s,]+/).filter(Boolean);
+        if (!emails.length) return;
+        return _ask(rl, 'Output format (txt/csv/json)', 'txt').then(function (f) {
+            var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'txt';
+            return _captureOutput(function () {
+                return cmdMx({ pos: emails, flags: { format: fmt } });
+            }).then(function (out) { return _afterAction(rl, out.captured); });
+        });
+    });
+}
+
+function _menuHistory(rl) {
+    return _ask(rl, 'History action: stats / list / export / clear', 'stats').then(function (sub) {
+        sub = (sub || 'stats').toLowerCase();
+        if (sub === 'export') {
+            return _ask(rl, 'Export to file path').then(function (dest) {
+                if (!dest) return;
+                return cmdHistory({ pos: ['export', dest], flags: {} });
+            });
+        }
+        if (sub === 'clear') {
+            return _askYesNo(rl, 'Wipe ALL persisted email history? This cannot be undone', false).then(function (yes) {
+                if (!yes) return;
+                return cmdHistory({ pos: ['clear'], flags: { yes: true } });
+            });
+        }
+        if (sub === 'list') {
+            return _ask(rl, 'Output format (txt/csv/json)', 'txt').then(function (f) {
+                var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'txt';
+                return _captureOutput(function () {
+                    return cmdHistory({ pos: ['list'], flags: { format: fmt } });
+                }).then(function (out) { return _afterAction(rl, out.captured); });
+            });
+        }
+        return cmdHistory({ pos: ['stats'], flags: {} });
+    });
+}
+
+function _menuSettings(rl) {
+    process.stdout.write('  Current settings:\n');
+    process.stdout.write('    saveToDesktop=' + INTERACTIVE_SETTINGS.saveToDesktop + '\n');
+    process.stdout.write('    skipSeen=' + INTERACTIVE_SETTINGS.skipSeen + '   (re-runs skip already-extracted emails)\n');
+    process.stdout.write('    strict=' + INTERACTIVE_SETTINGS.strict + '   (true = min-confidence 30, false = 0)\n');
+    process.stdout.write('    minConfidenceOverride=' + (INTERACTIVE_SETTINGS.minConfidence == null ? '(off)' : INTERACTIVE_SETTINGS.minConfidence) + '\n');
+    process.stdout.write('    country=' + (INTERACTIVE_SETTINGS.country || '(off)') + '\n');
+    process.stdout.write('    followContact=' + INTERACTIVE_SETTINGS.followContact + '\n');
+    process.stdout.write('    maxPages=' + INTERACTIVE_SETTINGS.maxPages + '\n');
+    process.stdout.write('    saveFolder=' + (INTERACTIVE_SETTINGS.saveFolder || '(Desktop)') + '\n');
+    return _askYesNo(rl, 'Toggle skip-seen?', false).then(function (yes) {
+        if (yes) INTERACTIVE_SETTINGS.skipSeen = !INTERACTIVE_SETTINGS.skipSeen;
+    }).then(function () {
+        return _askYesNo(rl, 'Toggle strict mode (min-confidence 30)?', false);
+    }).then(function (yes) {
+        if (yes) INTERACTIVE_SETTINGS.strict = !INTERACTIVE_SETTINGS.strict;
+    }).then(function () {
+        return _ask(rl, 'Default country code (2 letters, blank to clear)', INTERACTIVE_SETTINGS.country);
+    }).then(function (c) {
+        INTERACTIVE_SETTINGS.country = String(c || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+    }).then(function () {
+        return _ask(rl, 'Default max-pages', String(INTERACTIVE_SETTINGS.maxPages));
+    }).then(function (mp) {
+        var n = parseInt(mp, 10);
+        if (n >= 1 && n <= 50) INTERACTIVE_SETTINGS.maxPages = n;
+    }).then(function () {
+        return _ask(rl, 'Default save folder (blank = Desktop)', INTERACTIVE_SETTINGS.saveFolder || '');
+    }).then(function (folder) {
+        INTERACTIVE_SETTINGS.saveFolder = folder || '';
+    }).then(function () {
+        process.stdout.write('  ✔ Settings updated.\n');
+    });
+}
+
+function _isPipedInput() {
+    return process.stdin && process.stdin.isTTY === false;
+}
+
+function _maybePauseBeforeExit() {
+    // Windows users who double-click the .exe lose the console window the
+    // moment the process exits. Pause for a keypress so they can read the
+    // final output. We only do this on a real TTY (so piped scripts and
+    // CI runs aren't blocked), and only on Windows.
+    if (!process.stdin.isTTY) return Promise.resolve();
+    if (process.platform !== 'win32') return Promise.resolve();
+    var rl = _readline();
+    return rl.question('\nPress Enter to close…').then(function () { rl.close(); });
+}
+
+function runInteractive() {
+    _printBanner();
+    var rl = _readline();
+    function loop() {
+        _printMenu();
+        return _ask(rl, 'Your choice', '1').then(function (choice) {
+            choice = String(choice).trim();
+            var action;
+            switch (choice) {
+                case '1': action = _menuExtract(rl); break;
+                case '2': action = _menuSearch(rl); break;
+                case '3': action = _menuFootprint(rl); break;
+                case '4': action = _menuListFootprints(rl); break;
+                case '5': action = _menuPermute(rl); break;
+                case '6': action = _menuMx(rl); break;
+                case '7': action = _menuHistory(rl); break;
+                case '8': action = _menuSettings(rl); break;
+                case '9': help(); action = Promise.resolve(); break;
+                case '0':
+                case 'q':
+                case 'quit':
+                case 'exit':
+                    process.stdout.write('\nGoodbye.\n');
+                    rl.close();
+                    return _maybePauseBeforeExit();
+                default:
+                    process.stdout.write('  ? Unknown choice "' + choice + '". Type 0 to exit.\n');
+                    action = Promise.resolve();
+            }
+            return Promise.resolve(action)
+                .catch(function (err) {
+                    process.stdout.write('\n✗ Error: ' + (err && err.message ? err.message : err) + '\n');
+                })
+                .then(function () {
+                    process.stdout.write('\n');
+                    return loop();
+                });
+        });
+    }
+    return loop();
+}
+
+
 // ── Entrypoint ──────────────────────────────────────────────────────────────
 function main() {
     var argv = process.argv.slice(2);
-    if (argv.length === 0 || argv[0] === '-h' || argv[0] === '--help' || argv[0] === 'help') {
+    _installHistorySaveOnExit();
+
+    // No args (or explicit `menu`/`interactive`) → launch the interactive menu.
+    // This is what happens when the user double-clicks the .exe on Windows.
+    if (argv.length === 0 || argv[0] === 'menu' || argv[0] === 'interactive' || argv[0] === '-i' || argv[0] === '--interactive') {
+        Promise.resolve(runInteractive()).then(function () {
+            try { saveHistory(); } catch (e) { /* noop */ }
+        }).catch(function (err) {
+            console.error('Error:', err && err.stack ? err.stack : err);
+            try { saveHistory(); } catch (e) { /* noop */ }
+            process.exit(1);
+        });
+        return;
+    }
+
+    if (argv[0] === '-h' || argv[0] === '--help' || argv[0] === 'help') {
         help();
         return;
     }
     var cmd = argv.shift();
     var args = parseArgs(argv);
-    _installHistorySaveOnExit();
     var exec;
     switch (cmd) {
         case 'extract':         exec = cmdExtract(args); break;

@@ -6,6 +6,13 @@ Paris Email Extractor is an advanced Chrome extension that discovers and extract
 
 ---
 
+## ✨ What's new in v4.4
+
+- **Interactive menu** – just **double-click the .exe** (or run `paris` with no arguments) and a numbered menu lists every feature on screen. No commands to memorise. Each prompt has a sensible default; after each action you get a "**Save results to your Desktop? [Y/n]**" prompt that writes a timestamped CSV/JSON/TXT to `~/Desktop/`.
+- **`--desktop` flag** – on every command (`extract`, `search`, `footprint`, `permute`, `mx`, `history list`) saves the output straight to your Desktop with a sane filename.
+- **Higher recall** – default `--min-confidence` lowered from 30 → 0 (ISP/role filters still on, so quality stays high). Pass `--strict` for the old aggressive default.
+- See [DESKTOP.md](DESKTOP.md) for the full menu walkthrough and step-by-step Windows / macOS / Linux instructions.
+
 ## ✨ What's new in v4.3
 
 - **Persistent extraction history** – every email you collect is stored in `~/.paris-email-extractor/history.json` (CLI) or `chrome.storage.local.seenEmails` (extension). Re-running the same footprint **never re-emits** addresses from a previous run unless you pass `--no-skip-seen`. New `paris history` sub-command + `--since`/`--until`/`--after`/`--before`/`--history` flags.

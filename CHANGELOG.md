@@ -2,6 +2,36 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.4.0] - 2026-05-02
+
+### 🧭 Interactive Menu · Save-to-Desktop · Higher Recall
+
+#### Interactive menu — auto-launches when the .exe is double-clicked
+- Running the program with **no arguments** (or via `paris menu` / `paris interactive` / `paris -i`) now opens a numbered menu listing every feature on screen. No need to remember commands or type `--help`.
+- Menu options: **1)** extract from URL/file · **2)** web search · **3)** run a built-in footprint (with searchable matcher) · **4)** browse 1062 footprints (paged) · **5)** generate corporate email permutations · **6)** MX-validate emails · **7)** persistent history (stats / list / export / clear) · **8)** session settings (skip-seen, strict mode, default country, save folder, follow-contact, max-pages) · **9)** full feature reference · **0)** exit.
+- Every prompt shows a default in `[brackets]`; press Enter to accept. Defaults are stored in a session-level `INTERACTIVE_SETTINGS` so subsequent actions inherit them.
+- After every action the menu offers **"Save these results to your Desktop? [Y/n]"** and writes a timestamped file like `paris-extract-2026-05-02_15-30-12.csv` to `~/Desktop/` (or the configured save folder). The runner pauses with `Press Enter to close…` on Windows TTYs so a double-clicked console window doesn't disappear.
+- Menu uses a custom line-event readline wrapper so it behaves correctly on a real TTY *and* with piped stdin (smoke tests, scripts).
+
+#### `--desktop` flag for one-shot CLI use
+- New flag on `extract`, `search`, `footprint`, `permute`, `mx`, and `history list`: `--desktop` writes the output to `~/Desktop/paris-<command>-<timestamp>.<ext>` with the right extension for the chosen `--format`.
+- New `resolveDesktopPath()` resolves the user's Desktop on Windows / macOS / Linux including OneDrive-redirected paths (`%OneDrive%\Desktop`, `%USERPROFILE%\OneDrive\Desktop`); falls back to `~/Desktop` (creating it if needed), then `~`, then CWD. Filenames are sanitised and timestamped.
+
+#### Higher email-extraction recall by default
+- Default `--min-confidence` lowered from **30 → 0** for the CLI (`extract` / `search` / `footprint`). The previous threshold was discarding real leads — ISP/role/disposable filters still keep the result quality high.
+- New `--strict` flag restores the v4.2/4.3 behaviour (`--min-confidence 30`) for users who relied on it.
+- `extractFromHtml` fallback default also lowered to 0 for consistency.
+
+#### Documentation
+- `DESKTOP.md` rewritten around the menu: new TL;DR is "build once, double-click the .exe, pick a number". Adds a full menu walkthrough, a save-folder resolution table per OS, and a troubleshooting row for the two confusion sources reported by users ("the exe doesn't open" and "email extraction is too low").
+- README v4.4 callout added.
+- `package.json` and `manifest.json` bumped to **4.4.0** in lockstep.
+
+#### Compatibility
+- All existing footprints, regex, message events, storage keys, runner-finish hook semantics, and the Manifest V3 bundle are unchanged.
+- Every existing CLI flag still works exactly as before. `paris --help` / `paris -h` still print the reference; only the **no-args** path changed (it used to print help, it now launches the menu — `paris help` and `paris --help` still print help for scripts that depended on that).
+- The browser extension is **not affected** — `package.json` and `cli/` are ignored by Manifest V3.
+
 ## [4.3.0] - 2026-05-02
 
 ### 📅 Persistent History · Facebook & Lead-Gen Platforms · Desktop Guide
