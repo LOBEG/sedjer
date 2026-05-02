@@ -149,93 +149,29 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
 })
 
 // ── Deep Page Scanning (Enhanced) ──────────────────────────────────────────
+//
+// This now delegates extraction & validation to the shared EmailExtractor module
+// (loaded in service-worker.js via importScripts), so deep-scan results use the
+// SAME logic as content-script extraction (RFC5322 regex, lenient/obfuscated
+// patterns, LinkedIn/Apollo/ZoomInfo platform patterns, ISP/role/disposable
+// filtering, and confidence scoring).
 
-// Enhanced email regex with better Unicode support
-var _DEEP_EMAIL_REGEXP = /[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}/gi;
-
-// Expanded ISP domains list
-var _ISP_DOMAINS = {
-    'gmail.com':1, 'googlemail.com':1, 'yahoo.com':1, 'ymail.com':1, 'rocketmail.com':1,
-    'outlook.com':1, 'hotmail.com':1, 'live.com':1, 'msn.com':1,
-    'aol.com':1, 'icloud.com':1, 'me.com':1, 'mac.com':1,
-    'protonmail.com':1, 'proton.me':1, 'tutanota.com':1, 'tutanota.de':1,
-    'mail.com':1, 'gmx.com':1, 'gmx.de':1, 'gmx.net':1,
-    'comcast.net':1, 'xfinity.com':1, 'bellsouth.net':1, 'att.net':1, 'sbcglobal.net':1,
-    'verizon.net':1, 'cox.net':1, 'charter.net':1, 'spectrum.net':1, 'centurylink.net':1,
-    'frontier.com':1, 'frontiernet.net':1, 'earthlink.net':1, 'windstream.net':1,
-    'zoho.com':1, 'zohomail.com':1, 'fastmail.com':1, 'fastmail.fm':1,
-    'mail.ru':1, 'yandex.com':1, 'yandex.ru':1, 'inbox.com':1,
-    'web.de':1, 'freenet.de':1, 't-online.de':1, 'qq.com':1, '163.com':1, '126.com':1
-};
-
-// Enhanced junk email detection
-function _isJunkEmail(email) {
-    var domain = email.split('@')[1] || '';
-    var localPart = email.split('@')[0] || '';
-    
-    // Role-based emails
-    var rolePatterns = /^(noreply|no-reply|no_reply|donotreply|do-not-reply|mailer-daemon|postmaster|webmaster|admin|administrator|root|bounce|unsubscribe|abuse|spam)@/i;
-    if (rolePatterns.test(email)) return true;
-    
-    // File extensions
-    if (/\.(png|jpg|jpeg|gif|svg|css|js|json|xml|woff|woff2|ttf|eot|mp3|mp4|zip|rar|pdf)$/i.test(email)) return true;
-    
-    // Test and placeholder domains
-    var testDomains = ['example.com', 'example.org', 'test.com', 'localhost', 'sentry.io', 'wixpress.com'];
-    if (testDomains.indexOf(domain) !== -1) return true;
-    
-    // Very short or suspiciously formatted
-    if (localPart.length < 2 || domain.length < 4) return true;
-    
-    return false;
-}
-
-// Extract emails from obfuscated formats
-function _extractObfuscatedEmails(text) {
-    var emails = [];
-    var obfuscatedPatterns = [
-        /([a-zA-Z0-9._+-]+)\s*\[at\]\s*([a-zA-Z0-9.-]+\s*\[dot\]\s*[a-zA-Z]{2,})/gi,
-        /([a-zA-Z0-9._+-]+)\s*\(at\)\s*([a-zA-Z0-9.-]+\s*\(dot\)\s*[a-zA-Z]{2,})/gi,
-        /([a-zA-Z0-9._+-]+)\s+AT\s+([a-zA-Z0-9.-]+\s+DOT\s+[a-zA-Z]{2,})/gi,
-        /([a-zA-Z0-9._+-]+)\s+at\s+([a-zA-Z0-9.-]+(?:\s+dot\s+[a-zA-Z0-9-]+)+)/gi
-    ];
-    
-    obfuscatedPatterns.forEach(function(pattern) {
-        pattern.lastIndex = 0;
-        var match;
-        while ((match = pattern.exec(text)) !== null) {
-            var email = match[0]
-                .replace(/\s*\[at\]\s*/gi, '@')
-                .replace(/\s*\(at\)\s*/gi, '@')
-                .replace(/\s+AT\s+/gi, '@')
-                .replace(/\s+at\s+/gi, '@')
-                .replace(/\s*\[dot\]\s*/gi, '.')
-                .replace(/\s*\(dot\)\s*/gi, '.')
-                .replace(/\s+DOT\s+/gi, '.')
-                .replace(/\s+dot\s+/gi, '.')
-                .replace(/\s+/g, '')
-                .toLowerCase();
-            if (email.indexOf('@') > 0 && email.split('@').length === 2) {
-                emails.push(email);
-            }
-            // Prevent infinite loop on zero-length matches
-            if (match.index === pattern.lastIndex) {
-                pattern.lastIndex++;
-            }
-        }
-    });
-    
-    return emails;
+// Detect platform from URL (uses EmailExtractor when available, else generic)
+function _platformFromUrl(url) {
+    if (typeof EmailExtractor !== 'undefined' && EmailExtractor.detectPlatform) {
+        return EmailExtractor.detectPlatform(url);
+    }
+    return { platform: 'generic', isLinkedIn: false, isDataPlatform: false };
 }
 
 function _deepFetchPage(url, pattern, removeDuplicates) {
     var controller = new AbortController();
-    var timeout = setTimeout(function() { controller.abort(); }, 20000); // Increased timeout
+    var timeout = setTimeout(function() { controller.abort(); }, 20000);
 
     fetch(url, {
         signal: controller.signal,
         redirect: 'follow',
-        headers: { 
+        headers: {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8',
             'User-Agent': 'Mozilla/5.0 (compatible; Paris Email Extractor/4.0)'
         }
@@ -250,114 +186,101 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         return response.text();
     })
     .then(function(html) {
-        var allEmails = [];
-        
-        // 1. Extract from mailto: links
-        var mailtoRe = /mailto:([a-zA-Z0-9!#$%&'*+\/=?^_`{|}~.-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
-        var mailtoMatch;
-        while ((mailtoMatch = mailtoRe.exec(html)) !== null) {
-            allEmails.push(mailtoMatch[1]);
+        if (typeof EmailExtractor === 'undefined') {
+            log.w('_deepFetchPage: EmailExtractor not available');
+            return;
         }
 
-        // 2. Extract from JSON-LD structured data (enhanced)
+        var platformInfo = _platformFromUrl(url);
+
+        // Build a "scannable text" that preserves mailto links, JSON-LD, meta
+        // contents and data attributes — then strip HTML and decode entities so
+        // the EmailExtractor sees them as plain text and can apply ALL of its
+        // patterns (standard, lenient, obfuscated, LinkedIn, data-platform).
+        var preserved = [];
+
+        // mailto: anchors (preserve user@domain so it survives tag stripping)
+        var mailtoRe = /mailto:([^"'>\s)]+)/gi;
+        var m;
+        while ((m = mailtoRe.exec(html)) !== null) {
+            preserved.push(m[1]);
+            if (m.index === mailtoRe.lastIndex) mailtoRe.lastIndex++;
+        }
+
+        // JSON-LD structured data
         var jsonldRe = /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/\s*script[^>]*>/gi;
-        var jsonldMatch;
-        while ((jsonldMatch = jsonldRe.exec(html)) !== null) {
-            try {
-                var jsonText = jsonldMatch[1];
-                // Extract emails from JSON
-                var jsonEmails = jsonText.match(_DEEP_EMAIL_REGEXP) || [];
-                allEmails = allEmails.concat(jsonEmails);
-            } catch (e) {
-                // Invalid JSON, continue
+        while ((m = jsonldRe.exec(html)) !== null) {
+            preserved.push(m[1]);
+            if (m.index === jsonldRe.lastIndex) jsonldRe.lastIndex++;
+        }
+
+        // Meta tags whose name/property mentions email or contact
+        var metaRe = /<meta[^>]*(?:name|property)\s*=\s*["']([^"']*)["'][^>]*content\s*=\s*["']([^"']*)["'][^>]*>/gi;
+        while ((m = metaRe.exec(html)) !== null) {
+            var n = m[1].toLowerCase();
+            if (n.indexOf('email') > -1 || n.indexOf('contact') > -1) {
+                preserved.push(m[2]);
+            }
+            if (m.index === metaRe.lastIndex) metaRe.lastIndex++;
+        }
+
+        // data-email / data-contact attribute values
+        var dataAttrRe = /data-(?:email|contact)\s*=\s*["']([^"']+)["']/gi;
+        while ((m = dataAttrRe.exec(html)) !== null) {
+            preserved.push(m[1]);
+            if (m.index === dataAttrRe.lastIndex) dataAttrRe.lastIndex++;
+        }
+
+        // Strip script/style/tags and decode common HTML entities
+        var bodyText = html.replace(/<script\b[^>]*>[\s\S]*?<\/\s*script[^>]*>/gi, ' ')
+                           .replace(/<style\b[^>]*>[\s\S]*?<\/\s*style[^>]*>/gi, ' ')
+                           .replace(/<[^>]+>/g, ' ')
+                           .replace(/&nbsp;/gi, ' ')
+                           .replace(/&quot;/gi, '"')
+                           .replace(/&amp;/gi, '&')
+                           .replace(/&lt;/gi, '<')
+                           .replace(/&gt;/gi, '>')
+                           .replace(/&#(\d+);/g, function(_, code) {
+                               try { return String.fromCharCode(parseInt(code, 10)); }
+                               catch (e) { return ' '; }
+                           });
+
+        var combinedText = preserved.join('\n') + '\n' + bodyText;
+
+        // Run the SAME extraction the content script uses
+        var extractorOpts = {
+            isLinkedIn: !!platformInfo.isLinkedIn,
+            isDataPlatform: !!platformInfo.isDataPlatform
+        };
+        var extracted = EmailExtractor.extractEmails(combinedText, extractorOpts);
+
+        // Apply filtering: minimum confidence, role exclusion, and (if a
+        // pattern is supplied) restrict to that domain — otherwise exclude ISP.
+        var patternDomain = null;
+        if (pattern) {
+            patternDomain = pattern.replace(/"/g, '').trim();
+            if (patternDomain.charAt(0) === '@') {
+                patternDomain = patternDomain.substring(1);
             }
         }
 
-        // 3. Extract from meta tags (og:email, contact, etc.)
-        var metaRe = /<meta[^>]*(?:name|property)\s*=\s*["'](.*?)["'][^>]*content\s*=\s*["']([^"']*)["'][^>]*>/gi;
-        var metaMatch;
-        while ((metaMatch = metaRe.exec(html)) !== null) {
-            var metaName = metaMatch[1].toLowerCase();
-            var metaContent = metaMatch[2];
-            if (metaName.indexOf('email') > -1 || metaName.indexOf('contact') > -1) {
-                var metaEmails = metaContent.match(_DEEP_EMAIL_REGEXP) || [];
-                allEmails = allEmails.concat(metaEmails);
-            }
+        var filterOpts = {
+            minConfidence: 30,
+            excludeRoles: true
+        };
+        if (patternDomain) {
+            filterOpts.domainPattern = patternDomain;
+        } else {
+            filterOpts.excludeISP = true;
         }
 
-        // 4. Extract from data attributes (Apollo.io, ZoomInfo style)
-        var dataAttrRe = /data-(?:email|contact)[:\s="']+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
-        var dataMatch;
-        while ((dataMatch = dataAttrRe.exec(html)) !== null) {
-            allEmails.push(dataMatch[1]);
-        }
+        var filtered = EmailExtractor.filterEmails(extracted, filterOpts);
+        var unique = EmailExtractor.getUniqueEmails(filtered);
 
-        // 5. Extract from LinkedIn profile patterns
-        var isLinkedIn = false;
-        try {
-            var urlObj = new URL(url);
-            var hostname = urlObj.hostname.toLowerCase();
-            isLinkedIn = (hostname === 'linkedin.com' || hostname.endsWith('.linkedin.com'));
-        } catch (e) {
-            // If URL parsing fails, treat as non-LinkedIn
-            isLinkedIn = false;
-        }
-        
-        if (isLinkedIn) {
-            var linkedinRe = /(?:email|contact)[:\s]+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
-            var linkedinMatch;
-            while ((linkedinMatch = linkedinRe.exec(html)) !== null) {
-                allEmails.push(linkedinMatch[1]);
-            }
-        }
-
-        // 6. Extract obfuscated emails
-        var obfuscatedEmails = _extractObfuscatedEmails(html);
-        allEmails = allEmails.concat(obfuscatedEmails);
-
-        // 7. Strip HTML and extract from plain text
-        var text = html.replace(/<script\b[^>]*>[\s\S]*?<\/\s*script[^>]*>/gi, ' ')
-                       .replace(/<style\b[^>]*>[\s\S]*?<\/\s*style[^>]*>/gi, ' ')
-                       .replace(/<[^>]+>/g, ' ')
-                       .replace(/&nbsp;/gi, ' ')
-                       .replace(/&quot;/gi, '"')
-                       .replace(/&amp;/gi, '&')
-                       .replace(/&lt;/gi, '<')
-                       .replace(/&gt;/gi, '>');
-
-        var textEmails = text.match(_DEEP_EMAIL_REGEXP) || [];
-        allEmails = allEmails.concat(textEmails);
-
-        // Process and filter emails
         var addedNew = false;
-        var processed = {};
-
-        allEmails.forEach(function(email) {
-            var clean = email.toLowerCase().trim();
-            
-            // Skip if already processed
-            if (processed[clean]) return;
-            processed[clean] = true;
-            
-            // Skip junk emails
-            if (_isJunkEmail(clean)) return;
-
-            var domain = clean.split('@')[1];
-            if (!domain) return;
-
-            // Apply pattern filter if specified
-            if (pattern) {
-                var patternClean = pattern.replace(/"/g, '').trim();
-                if (patternClean.charAt(0) === '@') patternClean = patternClean.substring(1);
-                if (domain !== patternClean) return;
-            } else {
-                // If no pattern, exclude ISP domains (personal emails)
-                if (_ISP_DOMAINS.hasOwnProperty(domain)) return;
-            }
-
-            // Add to results if not duplicate
-            if (!removeDuplicates || serpdigger.runner.current.emailsFound.indexOf(clean) === -1) {
-                serpdigger.runner.current.emailsFound.push(clean);
+        unique.forEach(function(email) {
+            if (!removeDuplicates || serpdigger.runner.current.emailsFound.indexOf(email) === -1) {
+                serpdigger.runner.current.emailsFound.push(email);
                 addedNew = true;
             }
         });
@@ -429,8 +352,24 @@ function _onRunnerFinish() {
     log.i('_onRunnerFinish()');
     serpdigger.runner.current.running = false;
     serpdigger.runner.current.complete = true;
-    _notifyPopup('popup:complete', {state: _getRunnerState()});
     serpdigger.runner.current.tab = null;
+
+    // Auto-MX validate when enabled and we have results
+    if (serpdigger.runner.current.mxValidation
+        && serpdigger.runner.current.emailsFound
+        && serpdigger.runner.current.emailsFound.length > 0
+        && typeof serpdigger.validateEmails === 'function') {
+
+        log.i('_onRunnerFinish: triggering auto MX validation');
+        _notifyPopup('popup:complete', {state: _getRunnerState()});
+        _notifyPopup('popup:mxAutoStart', {count: serpdigger.runner.current.emailsFound.length});
+
+        serpdigger.validateEmails(function (results) {
+            _notifyPopup('popup:mxAutoComplete', {results: results});
+        });
+    } else {
+        _notifyPopup('popup:complete', {state: _getRunnerState()});
+    }
 };
 
 serpdigger.run = function (queries) {

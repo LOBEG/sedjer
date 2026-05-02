@@ -202,7 +202,12 @@ Runner.prototype.extract = function () {
             // Use enhanced email extractor if available
             if (window.EmailExtractor) {
                 var extractedEmails = window.EmailExtractor.extractEmails(allText, platformInfo);
-                var emailStrings = extractedEmails.map(function(e) { return e.email; });
+                // Apply confidence threshold and dedupe via the module
+                var filtered = window.EmailExtractor.filterEmails(extractedEmails, {
+                    minConfidence: 30,
+                    excludeRoles: true
+                });
+                var emailStrings = window.EmailExtractor.getUniqueEmails(filtered);
                 _runner._collectEmails(emailStrings);
             } else {
                 // Fallback to regex
@@ -236,7 +241,11 @@ Runner.prototype.extract = function () {
             // Use enhanced email extractor if available
             if (window.EmailExtractor) {
                 var extractedEmails = window.EmailExtractor.extractEmails(text, platformInfo);
-                var emailStrings = extractedEmails.map(function(e) { return e.email; });
+                var filtered = window.EmailExtractor.filterEmails(extractedEmails, {
+                    minConfidence: 30,
+                    excludeRoles: true
+                });
+                var emailStrings = window.EmailExtractor.getUniqueEmails(filtered);
                 _runner._collectEmails(emailStrings);
             } else {
                 // Fallback to regex

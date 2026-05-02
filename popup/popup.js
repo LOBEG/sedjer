@@ -48,6 +48,23 @@ chrome.runtime.onMessage.addListener(function (request) {
         $('#mx-valid-count').text(request.validCount);
         $('#mx-invalid-count').text(request.invalidCount);
         $('#mx-progress-text').text('Checking ' + request.checked + '/' + request.total + ' domains...');
+    } else if (request.eventName === 'popup:mxAutoStart') {
+        // Auto MX validation kicked off by the background runner on completion
+        $('#mx-validate-btn').attr('disabled', true).text('CHECKING...');
+        $('#mx-results-panel').show();
+        $('#mx-progress-text').text('Auto-validating ' + request.count + ' emails...');
+        $('#mx-valid-count').text('0');
+        $('#mx-invalid-count').text('0');
+        $('#download-valid').attr('disabled', true);
+        $('#download-invalid').attr('disabled', true);
+    } else if (request.eventName === 'popup:mxAutoComplete') {
+        var results = request.results || {validCount: 0, invalidCount: 0, total: 0};
+        $('#mx-valid-count').text(results.validCount);
+        $('#mx-invalid-count').text(results.invalidCount);
+        $('#mx-progress-text').text('Complete (' + results.total + ' emails checked)');
+        $('#mx-validate-btn').attr('disabled', false).text('MX CHECK');
+        if (results.validCount > 0) $('#download-valid').attr('disabled', false);
+        if (results.invalidCount > 0) $('#download-invalid').attr('disabled', false);
     }
 });
 

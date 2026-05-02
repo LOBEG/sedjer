@@ -55,6 +55,12 @@ function storeMaxPages(val) {
     });
 }
 
+function storeAutoMxValidate(val) {
+    chrome.storage.local.set({
+        mxValidation: val
+    });
+}
+
 function storeSearchEngine(val) {
     chrome.storage.local.set({
         searchEngine: val
@@ -147,6 +153,14 @@ function restoreMaxPages() {
             $('#maxPagesInput').val(items.maxPagesPerQuery);
             _sendEvent('state:setMaxPages', {value: items.maxPagesPerQuery});
         }
+    });
+}
+
+function restoreAutoMxValidate() {
+    chrome.storage.local.get('mxValidation', function (items) {
+        var val = (items.mxValidation === true);
+        $('#autoMxValidate').get(0).checked = val;
+        _sendEvent('state:setMxValidation', {value: val});
     });
 }
 
@@ -354,6 +368,11 @@ _onInit(function () {
         storeDeepScan(this.checked);
     });
 
+    $('#autoMxValidate').on('click', function () {
+        storeAutoMxValidate(this.checked);
+        _sendEvent('state:setMxValidation', {value: this.checked});
+    });
+
     $('#maxPagesInput').on('input change keyup', function () {
         var val = parseInt($(this).val(), 10);
         if (!val || val < 1) val = 1;
@@ -390,6 +409,7 @@ _onInit(function () {
     restoreLocationExactMatch();
     restoreTerm2ExactMatch();
     restoreDeepScan();
+    restoreAutoMxValidate();
     restoreSearchEngine();
     restoreMaxPages();
     

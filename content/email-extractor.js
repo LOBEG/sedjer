@@ -10,7 +10,7 @@
  * - Advanced validation and filtering
  */
 
-(function(window) {
+(function(globalScope) {
     'use strict';
 
     var EmailExtractor = {};
@@ -252,9 +252,15 @@
             return result;
         }
 
-        // Check role-based prefixes
+        // Check role-based prefixes (exact match OR prefix followed by separator)
         var isRoleBased = ROLE_PREFIXES.some(function(prefix) {
-            return localPart.indexOf(prefix) === 0;
+            if (localPart === prefix) return true;
+            if (localPart.length > prefix.length &&
+                localPart.substring(0, prefix.length) === prefix) {
+                var nextChar = localPart.charAt(prefix.length);
+                return nextChar === '.' || nextChar === '-' || nextChar === '_' || nextChar === '+';
+            }
+            return false;
         });
         if (isRoleBased) {
             result.reason = 'Role-based email';
@@ -417,11 +423,19 @@
                 }
             }
 
-            // Exclude role-based
+            // Exclude role-based (exact local-part match OR prefix-with-separator)
             if (filters.excludeRoles) {
                 var localPart = emailObj.email.split('@')[0];
                 var isRole = ROLE_PREFIXES.some(function(prefix) {
-                    return localPart.indexOf(prefix) === 0;
+                    if (localPart === prefix) return true;
+                    // Match "info-something" / "info.something" / "info_something"
+                    // but NOT "information"
+                    if (localPart.length > prefix.length &&
+                        localPart.substring(0, prefix.length) === prefix) {
+                        var nextChar = localPart.charAt(prefix.length);
+                        return nextChar === '.' || nextChar === '-' || nextChar === '_' || nextChar === '+';
+                    }
+                    return false;
                 });
                 if (isRole) {
                     return false;
@@ -502,10 +516,11 @@
      * Export functions to global scope
      */
     EmailExtractor.ISP_DOMAINS = ISP_DOMAINS;
+    EmailExtractor.ROLE_PREFIXES = ROLE_PREFIXES;
     EmailExtractor.validateEmail = validateEmail;
     EmailExtractor.normalizeObfuscatedEmail = normalizeObfuscatedEmail;
 
-    // Export to window
-    window.EmailExtractor = EmailExtractor;
+    // Export to global scope (works in both `window` and service-worker `self`)
+    globalScope.EmailExtractor = EmailExtractor;
 
-})(window);
+})(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : this));

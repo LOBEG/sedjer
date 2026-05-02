@@ -1,1 +1,1 @@
-importScripts('../includes/logs.js', 'index.js', 'api.js', 'account.js', 'communication.js', 'runner.js');
+importScripts('../includes/logs.js', '../content/email-extractor.js', 'index.js', 'api.js', 'account.js', 'communication.js', 'runner.js');
