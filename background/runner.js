@@ -318,6 +318,16 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
 
         var addedNew = false;
         unique.forEach(function(email) {
+            // Persistent skip-seen: drop emails already known from a prior
+            // run when the popup checkbox is enabled. Within-run dedup is
+            // still done via the emailsFound check below.
+            if (serpdigger.runner.current.skipSeen) {
+                var key = String(email).toLowerCase();
+                if (serpdigger.runner.current.seenEmails &&
+                    serpdigger.runner.current.seenEmails.hasOwnProperty(key)) {
+                    return;
+                }
+            }
             if (!removeDuplicates || serpdigger.runner.current.emailsFound.indexOf(email) === -1) {
                 serpdigger.runner.current.emailsFound.push(email);
                 addedNew = true;
@@ -393,6 +403,27 @@ function _onRunnerFinish() {
     serpdigger.runner.current.complete = true;
     serpdigger.runner.current.tab = null;
 
+    // Persist newly-found emails into chrome.storage.local.seenEmails so
+    // that the next run can skip them when "Skip emails seen in previous
+    // runs" is on. We always update the store (regardless of whether
+    // skip-seen was active for this run) so the history grows over time.
+    var found = serpdigger.runner.current.emailsFound || [];
+    if (found.length > 0) {
+        chrome.storage.local.get(['seenEmails'], function (items) {
+            var store = (items.seenEmails && typeof items.seenEmails === 'object') ? items.seenEmails : {};
+            var nowIso = new Date().toISOString();
+            found.forEach(function (email) {
+                var key = String(email).toLowerCase();
+                if (store[key]) {
+                    store[key].lastSeen = nowIso;
+                } else {
+                    store[key] = { firstSeen: nowIso, lastSeen: nowIso };
+                }
+            });
+            chrome.storage.local.set({ seenEmails: store });
+        });
+    }
+
     // Auto-MX validate when enabled and we have results
     if (serpdigger.runner.current.mxValidation
         && serpdigger.runner.current.emailsFound
@@ -424,6 +455,12 @@ serpdigger.run = function (queries) {
     serpdigger.runner.current.fetchedUrls = [];
     serpdigger.runner.current.pagesForCurrentQuery = 0;
     serpdigger.runner.current.mxResults = {};
+    // Persistent skip-seen: if the user enabled "Skip emails seen in
+    // previous runs" in the popup, load the persisted email→timestamp
+    // map from chrome.storage.local once before the runner starts. The
+    // runner reads from current.seenEmails when adding new emails.
+    serpdigger.runner.current.seenEmails = {};
+    serpdigger.runner.current.skipSeen = false;
 
     _notifyPopup('popup:emailCount', {count: 0});
     _notifyPopup('popup:progress', {
@@ -433,14 +470,21 @@ serpdigger.run = function (queries) {
     });
     _notifyPopup('popup:started', {state: _getRunnerState()});
 
-    chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
-        if (!tabs || !tabs[0]) {
-            log.e('No active tab found');
-            _onRunnerStopped();
-            return;
+    chrome.storage.local.get(['skipSeenEmails', 'seenEmails'], function (items) {
+        serpdigger.runner.current.skipSeen = !!items.skipSeenEmails;
+        if (serpdigger.runner.current.skipSeen && items.seenEmails && typeof items.seenEmails === 'object') {
+            serpdigger.runner.current.seenEmails = items.seenEmails;
+            log.i('skip-seen ON, history loaded with ' + Object.keys(items.seenEmails).length + ' email(s)');
         }
-        serpdigger.runner.current.tab = tabs[0];
-        _nextRunner();
+        chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
+            if (!tabs || !tabs[0]) {
+                log.e('No active tab found');
+                _onRunnerStopped();
+                return;
+            }
+            serpdigger.runner.current.tab = tabs[0];
+            _nextRunner();
+        });
     });
 };
 

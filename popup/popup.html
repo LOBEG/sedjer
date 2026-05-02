@@ -335,6 +335,20 @@
                                     <b>Auto MX validate</b>
                                 </label>
                             </div>
+                            <div class="checkbox" style="margin-bottom: -5px;"
+                                 title="When checked, emails found in any previous extraction run are skipped, so re-running a footprint never re-emits the same addresses.">
+                                <label>
+                                    <input type="checkbox" id="skipSeenEmails">
+                                    <b>Skip emails seen in previous runs</b>
+                                </label>
+                            </div>
+                            <div style="margin-top: 4px;">
+                                <button type="button" class="btn btn-default btn-xs" id="clearSeenBtn"
+                                        title="Wipe the persistent skip-seen history kept in chrome.storage.local.seenEmails">
+                                    Clear seen-history
+                                </button>
+                                <small id="seenHistoryCount" class="text-muted" style="margin-left: 6px;"></small>
+                            </div>
                         </div>
                         <div class="col-sm-2">
                             <a class="btn btn-default" href="http://www.serpdigger.com/help" target="_blank">Help?</a>

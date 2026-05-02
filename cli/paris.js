@@ -445,6 +445,171 @@ function followContactSubpages(baseUrl, opts) {
 }
 
 
+// ── Persistent extraction history (skip-seen across runs) ──────────────────
+// Re-running the CLI with the same query/footprint should NOT re-emit emails
+// you've already collected in a previous run. We persist a tiny JSON file
+// keyed by lowercased email → { firstSeen, lastSeen, sourceUrl, footprint,
+// command }. Default location is ~/.paris-email-extractor/history.json
+// (overridable with --history <path> or the PARIS_HISTORY env var).
+//
+// On every run we:
+//   • Load history once into an in-memory map (HISTORY_MAP)
+//   • Filter out any extracted record whose email is already present
+//     (unless --no-skip-seen is passed)
+//   • Append every newly emitted email back to the history before exit
+//
+// The browser extension implements a parallel feature in popup/query.js
+// using chrome.storage.local.seenEmails so behaviour is consistent across
+// the standalone exe and the extension.
+function _defaultHistoryPath() {
+    if (process.env.PARIS_HISTORY) return process.env.PARIS_HISTORY;
+    var home = process.env.HOME || process.env.USERPROFILE || '.';
+    return path.join(home, '.paris-email-extractor', 'history.json');
+}
+
+var HISTORY_PATH = null;   // resolved on first call
+var HISTORY_MAP  = null;   // { emailLower: { firstSeen, lastSeen, ... } }
+var HISTORY_DIRTY = false;
+
+function _isoDay(d) {
+    // Accepts a Date, ISO string, or YYYY-MM-DD; returns YYYY-MM-DD.
+    if (d instanceof Date) return d.toISOString().slice(0, 10);
+    var s = String(d || '').trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    var parsed = new Date(s);
+    if (isNaN(parsed.getTime())) return '';
+    return parsed.toISOString().slice(0, 10);
+}
+
+function loadHistory(customPath) {
+    if (HISTORY_MAP) return HISTORY_MAP;
+    HISTORY_PATH = customPath || _defaultHistoryPath();
+    try {
+        if (fs.existsSync(HISTORY_PATH)) {
+            var raw = fs.readFileSync(HISTORY_PATH, 'utf8');
+            var parsed = JSON.parse(raw);
+            // Forward-compat: accept either { emails: {...} } or a flat map.
+            HISTORY_MAP = (parsed && typeof parsed === 'object' && parsed.emails && typeof parsed.emails === 'object')
+                ? parsed.emails
+                : (parsed && typeof parsed === 'object' ? parsed : {});
+        } else {
+            HISTORY_MAP = {};
+        }
+    } catch (e) {
+        process.stderr.write('Warning: history file unreadable (' + e.message + ') — starting fresh\n');
+        HISTORY_MAP = {};
+    }
+    return HISTORY_MAP;
+}
+
+function recordHistory(records, meta) {
+    if (!records || !records.length) return;
+    if (!HISTORY_MAP) loadHistory();
+    var now = new Date().toISOString();
+    meta = meta || {};
+    records.forEach(function (r) {
+        if (!r || !r.email) return;
+        var key = String(r.email).toLowerCase();
+        var prev = HISTORY_MAP[key];
+        if (prev) {
+            prev.lastSeen = now;
+            if (meta.command) prev.lastCommand = meta.command;
+            if (r.sourceUrl) prev.lastSourceUrl = r.sourceUrl;
+            if (meta.footprint) prev.lastFootprint = meta.footprint;
+        } else {
+            HISTORY_MAP[key] = {
+                firstSeen: now,
+                lastSeen: now,
+                sourceUrl: r.sourceUrl || '',
+                footprint: meta.footprint || '',
+                command: meta.command || '',
+                source: r.source || '',
+                confidence: r.confidence || 0
+            };
+        }
+        HISTORY_DIRTY = true;
+    });
+}
+
+function saveHistory() {
+    if (!HISTORY_DIRTY || !HISTORY_PATH) return;
+    try {
+        var dir = path.dirname(HISTORY_PATH);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        var payload = {
+            version: 1,
+            updatedAt: new Date().toISOString(),
+            emails: HISTORY_MAP
+        };
+        fs.writeFileSync(HISTORY_PATH, JSON.stringify(payload, null, 2), 'utf8');
+        HISTORY_DIRTY = false;
+    } catch (e) {
+        process.stderr.write('Warning: failed to write history (' + e.message + ')\n');
+    }
+}
+
+// True if email should be SKIPPED based on --since/--until/skip-seen rules.
+function isInHistory(email, sinceDay, untilDay) {
+    if (!HISTORY_MAP) return false;
+    var rec = HISTORY_MAP[String(email).toLowerCase()];
+    if (!rec) return false;
+    var firstDay = (rec.firstSeen || '').slice(0, 10);
+    if (sinceDay && firstDay && firstDay < sinceDay) return false; // before window — keep
+    if (untilDay && firstDay && firstDay > untilDay) return false; // after window — keep
+    return true;
+}
+
+// Apply skip-seen + date-window filtering to a freshly-extracted batch.
+function applyHistoryFilter(records, opts) {
+    opts = opts || {};
+    var skipSeen = opts.skipSeen !== false;
+    var sinceDay = _isoDay(opts.since);
+    var untilDay = _isoDay(opts.until);
+    if (!skipSeen && !sinceDay && !untilDay) return records;
+    if (skipSeen && !HISTORY_MAP) loadHistory(opts.historyPath);
+    var skipped = 0;
+    var kept = records.filter(function (r) {
+        if (!r || !r.email) return false;
+        if (skipSeen && isInHistory(r.email, sinceDay, untilDay)) {
+            skipped++;
+            return false;
+        }
+        return true;
+    });
+    if (skipped) process.stderr.write('  (skipped ' + skipped + ' email[s] already in history)\n');
+    return kept;
+}
+
+// Read-only helper for the `history` sub-command + tests.
+function getHistory() {
+    if (!HISTORY_MAP) loadHistory();
+    return HISTORY_MAP;
+}
+
+// Inject Google search-engine date operators when the user passes
+// --after / --before to bias discovery toward fresh content.
+function applyDateRangeToQuery(query, after, before) {
+    var afterDay  = _isoDay(after);
+    var beforeDay = _isoDay(before);
+    var ops = [];
+    if (afterDay)  ops.push('after:'  + afterDay);
+    if (beforeDay) ops.push('before:' + beforeDay);
+    if (!ops.length) return query;
+    return ops.join(' ') + ' ' + query;
+}
+
+// Make sure history is flushed on every exit path (success, error, signal).
+function _installHistorySaveOnExit() {
+    if (_installHistorySaveOnExit._done) return;
+    _installHistorySaveOnExit._done = true;
+    var save = function () { try { saveHistory(); } catch (e) { /* noop */ } };
+    process.on('exit', save);
+    ['SIGINT', 'SIGTERM', 'SIGHUP'].forEach(function (sig) {
+        process.on(sig, function () { save(); process.exit(130); });
+    });
+}
+
 function parseArgs(argv) {
     var pos = [];
     var flags = {};
@@ -465,11 +630,21 @@ function parseArgs(argv) {
     return { pos: pos, flags: flags };
 }
 
+// Build a single `historyOpts` object from the parsed CLI flags.
+function _historyOptsFromArgs(args) {
+    return {
+        skipSeen:    args.flags['no-skip-seen'] ? false : true,
+        since:       args.flags.since  || null,
+        until:       args.flags.until  || null,
+        historyPath: args.flags.history || null
+    };
+}
+
 // ── Commands ────────────────────────────────────────────────────────────────
 function cmdExtract(args) {
     var target = args.pos[0];
     if (!target) {
-        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--follow-contact]');
+        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--history PATH]');
         process.exit(1);
     }
     var fmt   = args.flags.format || 'txt';
@@ -481,6 +656,8 @@ function cmdExtract(args) {
     };
     if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
     var followContact = !!args.flags['follow-contact'];
+    var historyOpts = _historyOptsFromArgs(args);
+    loadHistory(historyOpts.historyPath);
 
     var loader;
     if (/^https?:\/\//i.test(target)) {
@@ -500,23 +677,27 @@ function cmdExtract(args) {
         }
         ingest(page.html, page.src);
 
-        // "Deep DB" mode: also fetch /contact, /about, /team, etc.
+        function emit(extraNote) {
+            var filtered = applyHistoryFilter(records, historyOpts);
+            recordHistory(filtered, { command: 'extract' });
+            process.stderr.write('Found ' + filtered.length + ' email(s)' + (extraNote || '') + '\n');
+            writeOutput(formatOutput(filtered, fmt), out);
+        }
+
         if (followContact && page.src) {
             return followContactSubpages(page.src).then(function (pages) {
                 pages.forEach(function (p) { ingest(p.html, p.url); });
-                process.stderr.write('Found ' + records.length + ' email(s) (incl. ' + pages.length + ' sub-page[s])\n');
-                writeOutput(formatOutput(records, fmt), out);
+                emit(' (incl. ' + pages.length + ' sub-page[s])');
             });
         }
-        process.stderr.write('Found ' + records.length + ' email(s)\n');
-        writeOutput(formatOutput(records, fmt), out);
+        emit('');
     });
 }
 
 function cmdSearch(args) {
     var query = args.pos.join(' ');
     if (!query) {
-        console.error('usage: paris search "<query>" [--country CC] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--mx] [--follow-contact]');
+        console.error('usage: paris search "<query>" [--country CC] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--mx] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--history PATH]');
         process.exit(1);
     }
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
@@ -530,6 +711,8 @@ function cmdSearch(args) {
     };
     if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
     var followContact = !!args.flags['follow-contact'];
+    var historyOpts = _historyOptsFromArgs(args);
+    loadHistory(historyOpts.historyPath);
 
     if (args.flags.country) {
         var f = countryFilter(args.flags.country);
@@ -539,6 +722,10 @@ function cmdSearch(args) {
         } else {
             process.stderr.write('Warning: unknown country code "' + args.flags.country + '" — ignored\n');
         }
+    }
+    if (args.flags.after || args.flags.before) {
+        query = applyDateRangeToQuery(query, args.flags.after, args.flags.before);
+        process.stderr.write('Date-bounded query: ' + query + '\n');
     }
 
     process.stderr.write('Searching DuckDuckGo for: ' + query + '\n');
@@ -569,6 +756,10 @@ function cmdSearch(args) {
             process.stderr.write('\r  scanned ' + done + '/' + total + ', emails so far: ' + allRecords.length + '   ');
         }).then(function () {
             process.stderr.write('\n');
+            // Apply history filter and record new emails before MX so that
+            // the MX-validation count reflects only fresh emails.
+            allRecords = applyHistoryFilter(allRecords, historyOpts);
+            recordHistory(allRecords, { command: 'search' });
             if (args.flags.mx) {
                 process.stderr.write('Validating MX for ' + allRecords.length + ' email(s)…\n');
                 return validateEmailMx(allRecords.map(function (r) { return r.email; }))
@@ -600,16 +791,25 @@ function cmdFootprint(args) {
         console.error('No built-in footprint matched: ' + name);
         process.exit(1);
     }
+    var historyOpts = _historyOptsFromArgs(args);
+    loadHistory(historyOpts.historyPath);
     process.stderr.write('Footprint: ' + match.name + '\n');
     // A footprint's value can be multi-line — run each line as its own search.
     var queries = String(match.value).split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-    var allArgs = Object.assign({}, args, { pos: [], flags: args.flags });
     var seen = {};
     var collected = [];
     return queries.reduce(function (chain, q) {
         return chain.then(function () {
             process.stderr.write('-> ' + q + '\n');
-            var inner = { pos: [q], flags: Object.assign({}, args.flags, { format: 'json', out: null }) };
+            // Inner runSearchInternal must NOT skip-seen on its own (that
+            // would double-count); we apply history filtering once after
+            // ALL queries have run.
+            var innerFlags = Object.assign({}, args.flags, {
+                format: 'json',
+                out: null,
+                'no-skip-seen': true        // suppress inner filter
+            });
+            var inner = { pos: [q], flags: innerFlags };
             return runSearchInternal(inner).then(function (records) {
                 records.forEach(function (r) {
                     if (seen[r.email]) return;
@@ -619,12 +819,16 @@ function cmdFootprint(args) {
             });
         });
     }, Promise.resolve()).then(function () {
+        collected = applyHistoryFilter(collected, historyOpts);
+        recordHistory(collected, { command: 'footprint', footprint: match.name });
         var fmt = args.flags.format || 'txt';
         writeOutput(formatOutput(collected, fmt), args.flags.out);
     });
 }
 
 // Like cmdSearch but returns the records array instead of writing.
+// History filtering is opt-in here via args.flags so cmdFootprint can
+// suppress it during inner queries and apply it once at the end.
 function runSearchInternal(args) {
     var query = args.pos.join(' ');
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
@@ -639,7 +843,11 @@ function runSearchInternal(args) {
         var f = countryFilter(args.flags.country);
         if (f) query = applyCountryFilter(query, args.flags.country);
     }
+    if (args.flags.after || args.flags.before) {
+        query = applyDateRangeToQuery(query, args.flags.after, args.flags.before);
+    }
     var followContact = !!args.flags['follow-contact'];
+    var historyOpts = _historyOptsFromArgs(args);
     return ddgSearchUrls(query, maxPages).then(function (urls) {
         var seen = {};
         var records = [];
@@ -660,7 +868,9 @@ function runSearchInternal(args) {
                     });
                 })
                 .catch(function () { /* swallow per-url failures */ });
-        }).then(function () { return records; });
+        }).then(function () {
+            return applyHistoryFilter(records, historyOpts);
+        });
     });
 }
 
@@ -710,6 +920,94 @@ function cmdListFootprints(args) {
     rows.forEach(function (f) { process.stdout.write(f.name + '\n'); });
 }
 
+// ── History sub-command ────────────────────────────────────────────────────
+// `paris history`           → print stats
+// `paris history list`      → list all known emails (txt/json/csv)
+// `paris history clear`     → wipe the history file (with --yes confirmation)
+// `paris history export FILE` → copy the history JSON to FILE
+function cmdHistory(args) {
+    var sub = (args.pos[0] || 'stats').toLowerCase();
+    var historyOpts = _historyOptsFromArgs(args);
+    loadHistory(historyOpts.historyPath);
+    var entries = Object.keys(HISTORY_MAP).map(function (k) {
+        var v = HISTORY_MAP[k] || {};
+        return {
+            email: k,
+            firstSeen: v.firstSeen || '',
+            lastSeen: v.lastSeen || '',
+            sourceUrl: v.sourceUrl || '',
+            footprint: v.footprint || '',
+            command: v.command || ''
+        };
+    });
+    var sinceDay = _isoDay(args.flags.since);
+    var untilDay = _isoDay(args.flags.until);
+    if (sinceDay || untilDay) {
+        entries = entries.filter(function (r) {
+            var d = (r.firstSeen || '').slice(0, 10);
+            if (!d) return false;
+            if (sinceDay && d < sinceDay) return false;
+            if (untilDay && d > untilDay) return false;
+            return true;
+        });
+    }
+
+    if (sub === 'stats' || sub === '') {
+        process.stdout.write('History file: ' + HISTORY_PATH + '\n');
+        process.stdout.write('Total emails: ' + entries.length + '\n');
+        if (entries.length) {
+            var dates = entries.map(function (r) { return (r.firstSeen || '').slice(0, 10); }).filter(Boolean).sort();
+            process.stdout.write('Earliest:    ' + (dates[0] || '?') + '\n');
+            process.stdout.write('Latest:      ' + (dates[dates.length - 1] || '?') + '\n');
+        }
+        return Promise.resolve();
+    }
+    if (sub === 'list') {
+        var fmt = args.flags.format || 'txt';
+        if (fmt === 'json') writeOutput(JSON.stringify(entries, null, 2), args.flags.out);
+        else if (fmt === 'csv') {
+            var lines = ['email,firstSeen,lastSeen,sourceUrl,footprint,command'];
+            entries.forEach(function (r) {
+                var safe = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+                lines.push([safe(r.email), safe(r.firstSeen), safe(r.lastSeen), safe(r.sourceUrl), safe(r.footprint), safe(r.command)].join(','));
+            });
+            writeOutput(lines.join('\n'), args.flags.out);
+        } else {
+            writeOutput(entries.map(function (r) { return r.email; }).join('\n'), args.flags.out);
+        }
+        return Promise.resolve();
+    }
+    if (sub === 'export') {
+        var dest = args.pos[1];
+        if (!dest) { console.error('usage: paris history export <file>'); process.exit(1); }
+        fs.writeFileSync(dest, JSON.stringify({
+            version: 1,
+            updatedAt: new Date().toISOString(),
+            emails: HISTORY_MAP
+        }, null, 2), 'utf8');
+        process.stderr.write('Exported ' + entries.length + ' email(s) to ' + dest + '\n');
+        return Promise.resolve();
+    }
+    if (sub === 'clear') {
+        if (!args.flags.yes) {
+            console.error('Refusing to wipe ' + entries.length + ' email(s) without --yes');
+            process.exit(1);
+        }
+        try {
+            if (fs.existsSync(HISTORY_PATH)) fs.unlinkSync(HISTORY_PATH);
+            HISTORY_MAP = {};
+            HISTORY_DIRTY = false;
+            process.stderr.write('History cleared (' + HISTORY_PATH + ')\n');
+        } catch (e) {
+            console.error('Failed to clear history:', e.message);
+            process.exit(1);
+        }
+        return Promise.resolve();
+    }
+    console.error('Unknown history sub-command: ' + sub + '. Try: stats | list | export | clear');
+    process.exit(1);
+}
+
 // ── Help ────────────────────────────────────────────────────────────────────
 function help() {
     process.stdout.write([
@@ -725,6 +1023,8 @@ function help() {
         '  list-footprints [filter]    List all built-in footprints',
         '  permute <first> <last> <d>  Generate corporate email permutations',
         '  mx <email...>               MX-validate one or more email addresses',
+        '  history [stats|list|export FILE|clear --yes]',
+        '                              Manage the persistent extraction history',
         '',
         'COMMON OPTIONS',
         '  --out <file>            Write to file instead of stdout',
@@ -741,13 +1041,27 @@ function help() {
         '                          /about, /team, /people, /staff, /leadership pages',
         '  --mx                    MX-validate every result before output',
         '',
+        'HISTORY / DATE OPTIONS  (re-runs never repeat the same emails)',
+        '  --no-skip-seen          Disable history filtering for this run',
+        '  --since YYYY-MM-DD      Only re-emit emails first seen on/after this day',
+        '  --until YYYY-MM-DD      Only re-emit emails first seen on/before this day',
+        '  --history PATH          Override history-file location (default:',
+        '                          $PARIS_HISTORY or ~/.paris-email-extractor/history.json)',
+        '  --after  YYYY-MM-DD     Search-engine `after:` operator — only crawl pages',
+        '                          indexed/published on/after this date',
+        '  --before YYYY-MM-DD     Search-engine `before:` operator',
+        '',
         'EXAMPLES',
         '  paris extract https://example.com --follow-contact',
         '  paris search "site:linkedin.com/in/ \\"@acme.com\\"" --country GB --mx',
         '  paris footprint "Apollo.io" --country DE --max-pages 3 --format csv --out leads.csv',
+        '  paris footprint "Lead Platform: Facebook Pages" --after 2025-01-01',
         '  paris footprint "Country: Germany"',
         '  paris permute Jane Doe acme.com --mx',
         '  paris mx jane.doe@acme.com info@acme.com',
+        '  paris history stats',
+        '  paris history list --format csv --out seen.csv',
+        '  paris history clear --yes',
         ''
     ].join('\n'));
 }
@@ -761,6 +1075,7 @@ function main() {
     }
     var cmd = argv.shift();
     var args = parseArgs(argv);
+    _installHistorySaveOnExit();
     var exec;
     switch (cmd) {
         case 'extract':         exec = cmdExtract(args); break;
@@ -769,6 +1084,7 @@ function main() {
         case 'list-footprints': cmdListFootprints(args); return;
         case 'permute':         exec = cmdPermute(args); break;
         case 'mx':              exec = cmdMx(args); break;
+        case 'history':         exec = cmdHistory(args); break;
         case '--version':
         case 'version':
             process.stdout.write('Paris Email Extractor CLI ' + PARIS_VERSION + '\n');
@@ -780,6 +1096,7 @@ function main() {
     }
     Promise.resolve(exec).catch(function (err) {
         console.error('Error:', err && err.stack ? err.stack : err);
+        try { saveHistory(); } catch (e) { /* noop */ }
         process.exit(1);
     });
 }

@@ -61,6 +61,39 @@ function storeAutoMxValidate(val) {
     });
 }
 
+// ── Skip-seen emails (parity with CLI's --no-skip-seen / history) ─────────
+// When the checkbox is on, the runner reads chrome.storage.local.seenEmails
+// at the start of every run and drops any email already present. Every
+// successful run appends new emails (with firstSeen/lastSeen timestamps)
+// to chrome.storage.local.seenEmails so re-runs never re-emit duplicates.
+function storeSkipSeenEmails(val) {
+    chrome.storage.local.set({ skipSeenEmails: !!val });
+}
+
+function restoreSkipSeenEmails() {
+    chrome.storage.local.get('skipSeenEmails', function (items) {
+        if ($('#skipSeenEmails').length) {
+            $('#skipSeenEmails').get(0).checked = !!items.skipSeenEmails;
+        }
+    });
+}
+
+function refreshSeenHistoryCount() {
+    if (!$('#seenHistoryCount').length) return;
+    chrome.storage.local.get('seenEmails', function (items) {
+        var n = (items.seenEmails && typeof items.seenEmails === 'object')
+            ? Object.keys(items.seenEmails).length
+            : 0;
+        $('#seenHistoryCount').text(n + ' email' + (n === 1 ? '' : 's') + ' remembered');
+    });
+}
+
+function clearSeenHistory() {
+    chrome.storage.local.set({ seenEmails: {} }, function () {
+        refreshSeenHistoryCount();
+    });
+}
+
 // ── Country selection ──────────────────────────────────────────────────────
 // Maps ISO 3166-1 alpha-2 codes to a list of ccTLDs we'll use to restrict
 // queries when the user picks a country and ticks "Restrict to TLD".
@@ -473,6 +506,18 @@ _onInit(function () {
         _sendEvent('state:setMxValidation', {value: this.checked});
     });
 
+    if ($('#skipSeenEmails').length) {
+        $('#skipSeenEmails').on('click', function () {
+            storeSkipSeenEmails(this.checked);
+        });
+    }
+    if ($('#clearSeenBtn').length) {
+        $('#clearSeenBtn').on('click', function () {
+            if (typeof confirm === 'function' && !confirm('Clear the persistent seen-email history?')) return;
+            clearSeenHistory();
+        });
+    }
+
     $('#maxPagesInput').on('input change keyup', function () {
         var val = parseInt($(this).val(), 10);
         if (!val || val < 1) val = 1;
@@ -525,6 +570,8 @@ _onInit(function () {
     restoreMaxPages();
     restoreCountry();
     restoreCountryTld();
+    restoreSkipSeenEmails();
+    refreshSeenHistoryCount();
     
     log.i('after query : ', $('#delayInput').val());
     

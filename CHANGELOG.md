@@ -2,6 +2,38 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.3.0] - 2026-05-02
+
+### 📅 Persistent History · Facebook & Lead-Gen Platforms · Desktop Guide
+
+#### Persistent extraction history (skip-seen by default)
+- New CLI module: every emitted email is recorded in `~/.paris-email-extractor/history.json` (override with `--history PATH` or `PARIS_HISTORY` env) with `firstSeen` / `lastSeen` timestamps, source URL, footprint name and command. **Re-running the same footprint never re-emits emails already in the history.**
+- New flags on `extract` / `search` / `footprint`:
+  - `--no-skip-seen` — disable the filter for this run
+  - `--since YYYY-MM-DD` / `--until YYYY-MM-DD` — only re-emit emails first seen in a date window
+  - `--history PATH` — override history-file location
+  - `--after YYYY-MM-DD` / `--before YYYY-MM-DD` — inject Google `after:` / `before:` operators into the search query for date-bounded discovery
+- New `paris history` sub-command: `stats`, `list [--format json|csv|txt]`, `export FILE`, `clear --yes`. Saving to disk runs on `exit`/`SIGINT`/`SIGTERM`/`SIGHUP` so partial runs aren't lost.
+- **Browser extension parity:** popup gains a "Skip emails seen in previous runs" checkbox + "Clear seen-history" button + live counter. The runner loads `chrome.storage.local.seenEmails` at the start of each run, drops any email already known, and appends new ones at the end of every run regardless of whether skip-seen was active.
+
+#### Facebook + every other lead-generation platform (43 new footprints)
+Adds first-class footprints for: **Facebook (Pages, Profiles & About, Groups & Marketplace)**, Instagram bio emails, TikTok, X/Twitter, Reddit, YouTube channels & About, Pinterest, Threads, Telegram, Discord, Mastodon/Fediverse, WhatsApp Business, Quora, Medium, Substack, Behance, Dribbble, Vimeo, Twitch, Stack Overflow, GitLab, Bitbucket, Product Hunt, Indie Hackers, AngelList Talent / Wellfound, Glassdoor, Indeed, Monster, ZipRecruiter, F6S, PitchBook, CB Insights, Owler, Datanyze, ContactOut & SalesQL, Wiza, Snov.io & Kaspr, FindThatLead & GetEmail.io, Skrapp & AnymailFinder, Voila Norbert, plus a **★ All Social & Lead-Gen Platforms** combined entry that fans 20+ platforms into 3 mega-queries.
+
+Total built-in footprints: **1019 → 1062 (+43 additive)**.
+
+#### Desktop / standalone executable guide
+Adds **`DESKTOP.md`** with explicit step-by-step instructions for running the standalone program on Windows, macOS, and Linux:
+- prerequisites, global install via `npm install -g .`, building single-file binaries via `npm run build:exe[:win|:mac|:linux]`, sample run-commands per OS
+- complete reference of every CLI command + flag (incl. all new history/date flags)
+- 8 ready-made recipes (date-bounded scrape, daily-delta extraction with separate history per project, MX-validate piped lists, history backup/restore, …)
+- explanation of the history file format and default location per OS
+- troubleshooting table for the most common failure modes
+
+#### Compatibility
+- All existing footprints, regex, message events, storage keys, APIs and the Manifest V3 bundle are unchanged.
+- Default skip-seen behaviour for the **CLI** is **on** so re-runs deduplicate automatically. Pass `--no-skip-seen` for the v4.2 behaviour. Default for the **extension** is **off** (must be enabled via the new checkbox) so existing users see no behaviour change.
+- `package.json` and `manifest.json` bumped to **4.3.0** in lockstep.
+
 ## [4.2.0] - 2026-05-02
 
 ### 🌍 Global Coverage, Country Targeting & Deeper DB Scan

@@ -6,6 +6,12 @@ Paris Email Extractor is an advanced Chrome extension that discovers and extract
 
 ---
 
+## ✨ What's new in v4.3
+
+- **Persistent extraction history** – every email you collect is stored in `~/.paris-email-extractor/history.json` (CLI) or `chrome.storage.local.seenEmails` (extension). Re-running the same footprint **never re-emits** addresses from a previous run unless you pass `--no-skip-seen`. New `paris history` sub-command + `--since`/`--until`/`--after`/`--before`/`--history` flags.
+- **Facebook + every other lead-gen platform** – 43 brand-new footprints covering Facebook (Pages, Profiles, Groups), Instagram, TikTok, X/Twitter, Reddit, YouTube, Pinterest, Threads, Telegram, Discord, Mastodon, WhatsApp Business, Quora, Medium, Substack, Behance, Dribbble, Vimeo, Twitch, Stack Overflow, GitLab, Bitbucket, Product Hunt, Indie Hackers, AngelList/Wellfound, Glassdoor, Indeed, Monster, ZipRecruiter, F6S, PitchBook, CB Insights, Owler, Datanyze, ContactOut, SalesQL, Wiza, Snov.io, Kaspr, FindThatLead, Skrapp, AnymailFinder, Voila Norbert, plus a combined **All Social & Lead-Gen Platforms** entry. Total built-in footprints: **1062**.
+- **Desktop / standalone guide** – see [DESKTOP.md](DESKTOP.md) for step-by-step instructions to install the `paris` CLI globally or build a single-file Windows / macOS / Linux executable with `npm run build:exe`.
+
 ## ✨ New Features in v4.0
 
 ### Enhanced Email Extraction
