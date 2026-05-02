@@ -231,19 +231,21 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
             if (m.index === dataAttrRe.lastIndex) dataAttrRe.lastIndex++;
         }
 
-        // Strip script/style/tags and decode common HTML entities
+        // Strip script/style/tags and decode common HTML entities.
+        // Order matters: decode &amp; LAST to avoid double-unescaping (e.g.
+        // raw "&amp;lt;" must NOT become "<").
         var bodyText = html.replace(/<script\b[^>]*>[\s\S]*?<\/\s*script[^>]*>/gi, ' ')
                            .replace(/<style\b[^>]*>[\s\S]*?<\/\s*style[^>]*>/gi, ' ')
                            .replace(/<[^>]+>/g, ' ')
                            .replace(/&nbsp;/gi, ' ')
                            .replace(/&quot;/gi, '"')
-                           .replace(/&amp;/gi, '&')
                            .replace(/&lt;/gi, '<')
                            .replace(/&gt;/gi, '>')
                            .replace(/&#(\d+);/g, function(_, code) {
                                try { return String.fromCharCode(parseInt(code, 10)); }
                                catch (e) { return ' '; }
-                           });
+                           })
+                           .replace(/&amp;/gi, '&');
 
         var combinedText = preserved.join('\n') + '\n' + bodyText;
 
