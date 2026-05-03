@@ -307,12 +307,20 @@ function extractFromHtml(html, urlForPlatform, filterOptions) {
     var platformInfo = urlForPlatform
         ? EmailExtractor.detectPlatform(urlForPlatform)
         : { platform: 'generic', isLinkedIn: false, isDataPlatform: false };
-    var text = htmlToScannable(html);
-    var extracted = EmailExtractor.extractEmails(text, {
+    var extractOpts = {
         isLinkedIn: !!platformInfo.isLinkedIn,
         isDataPlatform: !!platformInfo.isDataPlatform,
         rfcStrict: !!(filterOptions && filterOptions.rfcStrict)
-    });
+    };
+    // Use the context-aware extractor so each result carries a `name` field
+    // (best-effort person-name found in surrounding <h1>/<h2>/<strong> tags).
+    // Falls back to plain extractEmails for non-HTML input.
+    var extracted;
+    if (html.indexOf('<') !== -1 && EmailExtractor.extractEmailsWithContext) {
+        extracted = EmailExtractor.extractEmailsWithContext(html, extractOpts);
+    } else {
+        extracted = EmailExtractor.extractEmails(htmlToScannable(html), extractOpts);
+    }
     var filtered = EmailExtractor.filterEmails(extracted, filterOptions || {
         minConfidence: 0,
         excludeRoles: true,
@@ -320,7 +328,29 @@ function extractFromHtml(html, urlForPlatform, filterOptions) {
         // Pass `--exclude-isp` (or set excludeISP:true) to drop them.
         excludeISP: false
     });
+    // Apply contextual confidence scoring based on the URL path. Pages like
+    // /contact, /about, /team strongly suggest the email belongs to a real
+    // person at the company; /blog, /forum, /comments pages are noisier.
+    if (urlForPlatform) {
+        var bump = _contextualConfidenceBump(urlForPlatform);
+        if (bump !== 0) {
+            filtered.forEach(function (r) {
+                r.confidence = Math.max(0, Math.min(100, (r.confidence || 0) + bump));
+            });
+        }
+    }
     return filtered;
+}
+
+// Boost confidence on contact/about/team pages, reduce it on blog/forum/
+// community pages. Returns a signed integer added to the email's score.
+var _CONTEXT_BOOST = /\/(contact|contact-us|contactus|about|about-us|aboutus|team|staff|people|leadership|management|directory|profile|profiles|bio|bios)(?:[\/?#]|$)/i;
+var _CONTEXT_PENALTY = /\/(blog|forum|forums|comments?|discussions?|posts?|community|topic|thread|reviews?|testimonials?)(?:[\/?#]|$)/i;
+function _contextualConfidenceBump(url) {
+    if (!url || typeof url !== 'string') return 0;
+    if (_CONTEXT_BOOST.test(url)) return 10;
+    if (_CONTEXT_PENALTY.test(url)) return -10;
+    return 0;
 }
 
 // Build the standard filter-options bag from CLI flags. Centralised so
@@ -505,10 +535,19 @@ function formatOutput(records, fmt) {
     fmt = (fmt || 'txt').toLowerCase();
     if (fmt === 'json') return JSON.stringify(records, null, 2);
     if (fmt === 'csv') {
-        var lines = ['email,source,confidence,sourceUrl'];
+        // Include `name` column when any record carries one (added in v4.6
+        // by EmailExtractor.extractEmailsWithContext).
+        var hasName = records.some(function (r) { return r && r.name; });
+        var header = hasName
+            ? 'email,name,source,confidence,sourceUrl'
+            : 'email,source,confidence,sourceUrl';
+        var lines = [header];
         records.forEach(function (r) {
             var safe = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
-            lines.push([safe(r.email), safe(r.source || ''), safe(r.confidence || ''), safe(r.sourceUrl || '')].join(','));
+            var row = hasName
+                ? [safe(r.email), safe(r.name || ''), safe(r.source || ''), safe(r.confidence || ''), safe(r.sourceUrl || '')]
+                : [safe(r.email), safe(r.source || ''), safe(r.confidence || ''), safe(r.sourceUrl || '')];
+            lines.push(row.join(','));
         });
         return lines.join('\n');
     }
@@ -672,6 +711,75 @@ function applyCountryFilter(query, code) {
     }
     // Prepend so it's applied first; existing site: operators still work.
     return f + ' ' + query;
+}
+
+// ── Industry-targeted search ────────────────────────────────────────────────
+// Curated map: industry slug -> a short list of high-signal keywords that we
+// OR into the search query so result pages skew toward the chosen vertical.
+// Keys are lowercase, hyphen-separated. Aliases (e.g. "tech" → "saas") are
+// resolved through ALIASES below. Keep entries small (≤ 6 keywords) so the
+// final query stays under search-engine length limits.
+var INDUSTRY_KEYWORDS = {
+    'saas':           ['"SaaS"', '"B2B software"', '"cloud platform"', '"product manager"'],
+    'fintech':        ['"fintech"', '"payments"', '"banking"', '"financial services"'],
+    'healthcare':     ['"healthcare"', '"clinic"', '"hospital"', '"medical"', '"physician"'],
+    'biotech':        ['"biotech"', '"pharmaceutical"', '"life sciences"', '"clinical research"'],
+    'real-estate':    ['"real estate"', '"realtor"', '"broker"', '"property"'],
+    'education':      ['"education"', '"university"', '"professor"', '"school"', '"academic"'],
+    'manufacturing':  ['"manufacturing"', '"factory"', '"production"', '"supply chain"'],
+    'marketing':      ['"marketing"', '"advertising"', '"brand"', '"agency"'],
+    'legal':          ['"law firm"', '"attorney"', '"lawyer"', '"counsel"', '"paralegal"'],
+    'ecommerce':      ['"ecommerce"', '"online store"', '"Shopify"', '"DTC"', '"retail"'],
+    'logistics':      ['"logistics"', '"freight"', '"shipping"', '"warehouse"', '"3PL"'],
+    'energy':         ['"energy"', '"oil & gas"', '"renewable"', '"solar"', '"utilities"'],
+    'hospitality':    ['"hospitality"', '"hotel"', '"restaurant"', '"travel"'],
+    'construction':   ['"construction"', '"contractor"', '"engineering"', '"architecture"'],
+    'automotive':     ['"automotive"', '"dealership"', '"car"', '"vehicle"'],
+    'media':          ['"media"', '"publishing"', '"journalism"', '"editor"', '"reporter"'],
+    'gaming':         ['"gaming"', '"game studio"', '"esports"', '"video games"'],
+    'nonprofit':      ['"nonprofit"', '"NGO"', '"charity"', '"foundation"'],
+    'consulting':     ['"consulting"', '"consultant"', '"advisory"', '"strategy"']
+};
+var INDUSTRY_ALIASES = {
+    'tech': 'saas', 'software': 'saas', 'b2b': 'saas',
+    'finance': 'fintech', 'banking': 'fintech',
+    'medical': 'healthcare', 'health': 'healthcare', 'pharma': 'biotech',
+    'realestate': 'real-estate', 'property': 'real-estate',
+    'edu': 'education', 'school': 'education',
+    'mfg': 'manufacturing', 'factory': 'manufacturing',
+    'ads': 'marketing', 'advertising': 'marketing',
+    'law': 'legal',
+    'retail': 'ecommerce', 'shop': 'ecommerce',
+    'shipping': 'logistics', 'freight': 'logistics',
+    'oil': 'energy', 'gas': 'energy', 'utilities': 'energy',
+    'hotels': 'hospitality', 'restaurants': 'hospitality', 'travel': 'hospitality',
+    'cars': 'automotive', 'auto': 'automotive',
+    'press': 'media', 'news': 'media',
+    'ngo': 'nonprofit', 'charity': 'nonprofit'
+};
+
+function _normalizeIndustry(name) {
+    if (!name) return '';
+    var k = String(name).toLowerCase().trim().replace(/\s+/g, '-');
+    if (INDUSTRY_ALIASES.hasOwnProperty(k)) k = INDUSTRY_ALIASES[k];
+    return INDUSTRY_KEYWORDS.hasOwnProperty(k) ? k : '';
+}
+
+function listIndustries() {
+    return Object.keys(INDUSTRY_KEYWORDS).sort();
+}
+
+function applyIndustryFilter(query, name) {
+    var key = _normalizeIndustry(name);
+    if (!key) return query;
+    var kws = INDUSTRY_KEYWORDS[key];
+    // OR the keywords together so any single match qualifies; group with
+    // parens so the rest of the query (site:, country, footprint…) still
+    // composes cleanly.
+    var clause = '(' + kws.join(' OR ') + ')';
+    // Skip if the user already mentioned the industry name verbatim.
+    if (query.toLowerCase().indexOf(key) !== -1) return query;
+    return clause + ' ' + query;
 }
 
 // ── Sub-page following for "deep DB" extraction ────────────────────────────
@@ -930,7 +1038,7 @@ function cmdExtract(args) {
             extractFromHtml(html, srcUrl, filterOpts).forEach(function (r) {
                 if (seen[r.email]) return;
                 seen[r.email] = true;
-                records.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
+                records.push({ email: r.email, name: r.name || "", source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
             });
         }
         ingest(page.html, page.src);
@@ -976,6 +1084,15 @@ function cmdSearch(args) {
             process.stderr.write('Warning: unknown country code "' + args.flags.country + '" — ignored\n');
         }
     }
+    if (args.flags.industry) {
+        var indKey = _normalizeIndustry(args.flags.industry);
+        if (indKey) {
+            query = applyIndustryFilter(query, indKey);
+            process.stderr.write('Industry filter: ' + indKey + '\n');
+        } else {
+            process.stderr.write('Warning: unknown industry "' + args.flags.industry + '". Known: ' + listIndustries().join(', ') + '\n');
+        }
+    }
     if (args.flags.after || args.flags.before) {
         query = applyDateRangeToQuery(query, args.flags.after, args.flags.before);
         process.stderr.write('Date-bounded query: ' + query + '\n');
@@ -991,7 +1108,7 @@ function cmdSearch(args) {
             extractFromHtml(html, srcUrl, filterOpts).forEach(function (r) {
                 if (seen[r.email]) return;
                 seen[r.email] = true;
-                allRecords.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
+                allRecords.push({ email: r.email, name: r.name || "", source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
             });
         }
         return pMap(urls, concurrency, function (u) {
@@ -1092,6 +1209,10 @@ function runSearchInternal(args) {
         var f = countryFilter(args.flags.country);
         if (f) query = applyCountryFilter(query, args.flags.country);
     }
+    if (args.flags.industry) {
+        var indKey2 = _normalizeIndustry(args.flags.industry);
+        if (indKey2) query = applyIndustryFilter(query, indKey2);
+    }
     if (args.flags.after || args.flags.before) {
         query = applyDateRangeToQuery(query, args.flags.after, args.flags.before);
     }
@@ -1104,7 +1225,7 @@ function runSearchInternal(args) {
             extractFromHtml(html, srcUrl, filterOpts).forEach(function (r) {
                 if (seen[r.email]) return;
                 seen[r.email] = true;
-                records.push({ email: r.email, source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
+                records.push({ email: r.email, name: r.name || "", source: r.source, confidence: r.confidence, sourceUrl: srcUrl });
             });
         }
         return pMap(urls, concurrency, function (u) {
@@ -1446,6 +1567,7 @@ var INTERACTIVE_SETTINGS = {
     strict: false,
     skipSeen: true,
     country: '',
+    industry: '',           // '' = no industry filter; otherwise one of listIndustries()
     followContact: true,
     maxPages: 3,
     minConfidence: null,    // null = use default rule
@@ -1458,6 +1580,7 @@ function _commonFlagsFromSettings(extra) {
     if (INTERACTIVE_SETTINGS.strict) f.strict = true;
     if (INTERACTIVE_SETTINGS.minConfidence != null) f['min-confidence'] = INTERACTIVE_SETTINGS.minConfidence;
     if (INTERACTIVE_SETTINGS.country) f.country = INTERACTIVE_SETTINGS.country;
+    if (INTERACTIVE_SETTINGS.industry) f.industry = INTERACTIVE_SETTINGS.industry;
     if (!INTERACTIVE_SETTINGS.skipSeen) f['no-skip-seen'] = true;
     if (extra) Object.keys(extra).forEach(function (k) { f[k] = extra[k]; });
     return f;
@@ -1705,6 +1828,7 @@ function _menuSettings(rl) {
     process.stdout.write('    strict=' + INTERACTIVE_SETTINGS.strict + '   (true = min-confidence 30, false = 0)\n');
     process.stdout.write('    minConfidenceOverride=' + (INTERACTIVE_SETTINGS.minConfidence == null ? '(off)' : INTERACTIVE_SETTINGS.minConfidence) + '\n');
     process.stdout.write('    country=' + (INTERACTIVE_SETTINGS.country || '(off)') + '\n');
+    process.stdout.write('    industry=' + (INTERACTIVE_SETTINGS.industry || '(off)') + '\n');
     process.stdout.write('    followContact=' + INTERACTIVE_SETTINGS.followContact + '\n');
     process.stdout.write('    maxPages=' + INTERACTIVE_SETTINGS.maxPages + '\n');
     process.stdout.write('    saveFolder=' + (INTERACTIVE_SETTINGS.saveFolder || '(Desktop)') + '\n');
@@ -1719,6 +1843,13 @@ function _menuSettings(rl) {
         return _ask(rl, 'Default country code (2 letters, blank to clear)', INTERACTIVE_SETTINGS.country);
     }).then(function (c) {
         INTERACTIVE_SETTINGS.country = String(c || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+    }).then(function () {
+        return _ask(rl, 'Default industry (saas, fintech, healthcare, …; blank to clear)', INTERACTIVE_SETTINGS.industry);
+    }).then(function (i) {
+        var key = _normalizeIndustry(i);
+        if (!i || /^\s*$/.test(i)) INTERACTIVE_SETTINGS.industry = '';
+        else if (key) INTERACTIVE_SETTINGS.industry = key;
+        else process.stdout.write('  Unknown industry; known: ' + listIndustries().join(', ') + '\n');
     }).then(function () {
         return _ask(rl, 'Default max-pages', String(INTERACTIVE_SETTINGS.maxPages));
     }).then(function (mp) {

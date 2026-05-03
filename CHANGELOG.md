@@ -2,6 +2,48 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.6.0] - 2026-05-03
+
+### 🐛 Bug fixes & smarter extraction
+
+#### Bug: Gmail (and other ISP/webmail) addresses were being silently dropped
+- The CLI's default filter previously hard-coded `excludeISP: true`, so `john@gmail.com`, `jane@yahoo.com`, `dev@outlook.com`, etc. never reached the user's CSV/JSON output.
+- Default flipped: **personal/ISP addresses are now KEPT by default.** Pass `--exclude-isp` to opt back into the old filtering. The legacy `--include-isp` flag is preserved as a no-op alias for back-compat with existing scripts.
+
+#### Bug: Local parts with rare RFC 5322 specials produced "noise" emails
+- The standard email regex matched RFC-compliant but unrealistic local parts like `john!#%&doe@acme.com`, which were almost always regex over-matches on HTML junk (button text, JSON fragments, ad-tracking blobs glued together by tag stripping).
+- New "clean local-part" check in `EmailExtractor.validateEmail()` rejects emails whose ASCII local part contains any of `!#$%&'*/=?^\`{|}~`. Allowed: alphanumerics, `.`, `_`, `+`, `-`. Pass `--rfc-strict` (or `validateEmail(email, {rfcStrict:true})`) to opt back into the loose RFC behaviour. The check is skipped for non-ASCII local parts, so RFC 6531 / IDN addresses are unaffected.
+
+#### Industry-targeted search
+- New `--industry <name>` flag on `paris search` and `paris footprint`, plus a "Default industry" entry in the interactive **Settings** menu.
+- Curated `INDUSTRY_KEYWORDS` map covering 19 verticals: **saas, fintech, healthcare, biotech, real-estate, education, manufacturing, marketing, legal, ecommerce, logistics, energy, hospitality, construction, automotive, media, gaming, nonprofit, consulting**. Common aliases (tech→saas, finance→fintech, law→legal, retail→ecommerce, etc.) are accepted.
+- The keywords are OR-grouped and prepended to the query so they compose cleanly with `site:`, country filters, footprint patterns, and CSE.
+
+#### Contact name association — names alongside emails in CSV/JSON
+- New `EmailExtractor.extractEmailsWithContext(html, opts)` scans HTML for nearby `<h1>/<h2>/<h3>/<h4>/<strong>/<b>/<title>` tags around each email match and attaches a `name` field when a plausible person name is found in the immediate neighbourhood (≤ 800 bytes back, ≤ 400 bytes forward).
+- The "name" heuristic accepts 2–4 capitalised tokens with hyphens (Anne-Marie) and apostrophes (O'Brien), uses Unicode property escapes for international names, and rejects boilerplate strings (Login, Home, Sign Up, Privacy, Copyright, …).
+- Role-based addresses (`info@`, `sales@`, `contact@`, …) are deliberately NOT name-associated — they don't have an "owner".
+- CLI's `extract`, `search`, and `footprint` commands now propagate the `name` through the pipeline. `--format csv` adds a `name` column whenever any record carries one; `--format json` always includes it.
+- A small confidence boost (+5) is applied when a name is associated, reflecting the increased contact value.
+
+#### Contextual confidence scoring
+- Emails discovered on contact-style URLs (`/contact`, `/contact-us`, `/about`, `/about-us`, `/team`, `/staff`, `/people`, `/leadership`, `/management`, `/directory`, `/profile`, `/bio`) now get a **+10 confidence boost** — these pages strongly suggest a real person at the company.
+- Emails discovered on noisy URLs (`/blog`, `/forum`, `/comments`, `/discussions`, `/posts`, `/community`, `/topic`, `/thread`, `/reviews`, `/testimonials`) get a **−10 confidence penalty** — these pages are typically full of user-generated content.
+- Combines naturally with `--follow-contact` (which already crawls those high-value sub-pages) so deep-DB results converge on legitimate contacts.
+
+### Future work (intentionally not in this release)
+The following items from the user's wishlist require either heavy new dependencies, real outbound network/SMTP infrastructure that can't be exercised in CI, or a full UI rewrite that won't fit in a single PR. They are tracked separately and will land in their own PRs:
+- **Catch-all domain detection** (needs SMTP RCPT probes on outbound port 25, frequently blocked / graylisted; needs a dedicated PR with replay-based integration tests).
+- **PDF / DOCX content extraction** (needs `pdf-parse` / `mammoth`, which would balloon the `pkg`-built single-file binary).
+- **JavaScript-rendered deep scan** via headless browser (needs Puppeteer or Playwright with a > 200 MB Chromium download — must be optional install).
+- **Extension popup History tab** (full UI rewrite of `popup/popup.html`).
+- **Unified CLI ↔ extension history sync** (needs transport + merge semantics).
+- **Electron / Tauri Desktop GUI** (multi-PR effort).
+
+### Compatibility
+- Browser extension and Manifest V3: unchanged. The shared `EmailExtractor` improvements (clean local-part check, name association) apply automatically because `content/email-extractor.js` is loaded by both the content scripts and the service worker.
+- All existing CLI flags continue to work; `--include-isp` is a no-op alias.
+
 ## [4.5.0] - 2026-05-02
 
 ### 🎯 Footprint-named saves · Cleaner extractions · Programmable Search Engine

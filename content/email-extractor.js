@@ -619,6 +619,161 @@
     EmailExtractor.stripGluedPlatformPrefix = stripGluedPlatformPrefix;
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // Contact-name association
+    // ═══════════════════════════════════════════════════════════════════════════
+    // After extracting an email, scan the surrounding HTML for a likely
+    // "owner name" — typically the contents of a nearby <h1>/<h2>/<h3>/<strong>
+    // tag (e.g. on a /team page each card has a name heading and an email
+    // immediately below it). Returns { email, name, … } objects so callers
+    // can render a "Name" column in CSV/JSON output.
+    //
+    // Heuristic (no DOM dependency, just regex over the original HTML):
+    //   1. Find the byte offset of the email match in the source HTML.
+    //   2. Look 800 bytes BACK from that offset for the closest preceding
+    //      <h1|h2|h3|h4|strong|b|title> tag whose text content looks like a
+    //      person name (2–4 capitalised tokens, no digits, no @, ≤ 80 chars).
+    //   3. If nothing found backwards, look 400 bytes FORWARD for the same.
+    //   4. If nothing found, return name="" — never invent.
+    //
+    // We deliberately do NOT use a DOM parser — the function has to run in
+    // the service worker AND the CLI without bringing in jsdom/cheerio.
+
+    var _NAME_TAG_RE = /<(h1|h2|h3|h4|strong|b|title)\b[^>]*>([\s\S]{1,400}?)<\/\1>/gi;
+    // A "person name" is 2–4 capitalised tokens. Allows hyphens (Anne-Marie),
+    // apostrophes (O'Brien), and Unicode letters via property escapes, with
+    // a fallback for older runtimes.
+    var _PERSON_NAME_RE;
+    try {
+        _PERSON_NAME_RE = /^[\p{Lu}][\p{L}'\-]+(?:\s+[\p{Lu}][\p{L}'\-]+){1,3}$/u;
+    } catch (e) {
+        _PERSON_NAME_RE = /^[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+){1,3}$/;
+    }
+
+    // Map of HTML entities we want to decode in a SINGLE pass. Doing this
+    // sequentially (e.g. decoding `&amp;` first and then `&lt;`) introduces
+    // a double-unescape vulnerability: the input `&amp;lt;` would first
+    // become `&lt;` and then `<`. The single-pass replace below avoids
+    // that because once a substitution has happened the resulting `&` is
+    // not re-scanned by the same replace() call.
+    var _HTML_ENTITIES = {
+        'amp': '&', 'lt': '<', 'gt': '>', 'quot': '"', 'apos': "'", 'nbsp': ' '
+    };
+    function _stripTags(html) {
+        return String(html || '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&(#?\w+);/g, function (match, name) {
+                if (_HTML_ENTITIES.hasOwnProperty(name.toLowerCase())) {
+                    return _HTML_ENTITIES[name.toLowerCase()];
+                }
+                if (name.charAt(0) === '#') {
+                    var code = name.charAt(1) === 'x' || name.charAt(1) === 'X'
+                        ? parseInt(name.substring(2), 16)
+                        : parseInt(name.substring(1), 10);
+                    if (isFinite(code) && code > 0 && code <= 0x10FFFF) {
+                        try { return String.fromCodePoint(code); } catch (e) { return ' '; }
+                    }
+                }
+                return ' ';
+            })
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function _looksLikeName(text) {
+        if (!text) return false;
+        if (text.length < 4 || text.length > 80) return false;
+        if (text.indexOf('@') !== -1) return false;
+        if (/\d/.test(text)) return false;
+        // Reject all-caps shouting and obvious non-name strings
+        if (text === text.toUpperCase() && text.length > 6) return false;
+        if (/\b(login|sign\s*up|home|contact|about|services|menu|search|copyright|privacy|terms)\b/i.test(text)) return false;
+        return _PERSON_NAME_RE.test(text);
+    }
+
+    /**
+     * Find the closest plausible person name to a given offset in HTML.
+     * Returns "" when no candidate clears the heuristic.
+     */
+    function _findNameNear(html, emailOffset) {
+        if (!html || typeof emailOffset !== 'number') return '';
+        var BACK_WINDOW = 800;
+        var FWD_WINDOW = 400;
+        var start = Math.max(0, emailOffset - BACK_WINDOW);
+        var end   = Math.min(html.length, emailOffset + FWD_WINDOW);
+        var slice = html.substring(start, end);
+        var emailRel = emailOffset - start;
+
+        var candidates = [];
+        _NAME_TAG_RE.lastIndex = 0;
+        var m;
+        while ((m = _NAME_TAG_RE.exec(slice)) !== null) {
+            var name = _stripTags(m[2]);
+            if (!_looksLikeName(name)) continue;
+            // Distance from the email position. Prefer preceding tags,
+            // then the closest following tag.
+            var tagEnd = m.index + m[0].length;
+            var distance;
+            if (tagEnd <= emailRel) distance = emailRel - tagEnd;       // before
+            else if (m.index >= emailRel) distance = m.index - emailRel + 200; // after, slight penalty
+            else distance = 0;                                          // overlap (rare)
+            candidates.push({ name: name, distance: distance });
+            if (m.index === _NAME_TAG_RE.lastIndex) _NAME_TAG_RE.lastIndex++;
+        }
+        if (!candidates.length) return '';
+        candidates.sort(function (a, b) { return a.distance - b.distance; });
+        return candidates[0].name;
+    }
+
+    /**
+     * Like extractEmails(text), but takes the original HTML and attaches a
+     * `name` field to each result by scanning the DOM neighbourhood for a
+     * likely person-name heading.
+     *
+     * @param {string} html - Raw HTML to scan.
+     * @param {Object} [options] - Same options as extractEmails().
+     * @returns {Array<{email, name, source, confidence, validation, offset}>}
+     */
+    EmailExtractor.extractEmailsWithContext = function (html, options) {
+        options = options || {};
+        if (!html || typeof html !== 'string') return [];
+
+        // First pass: extract emails from the (tag-stripped) text so the
+        // existing patterns and validation rules apply unchanged.
+        var text = _stripTags(html);
+        var results = EmailExtractor.extractEmails(text, options);
+
+        // Second pass: for each unique email, find its FIRST occurrence in
+        // the original HTML (case-insensitive) and attach a nearby name.
+        var lcHtml = html.toLowerCase();
+        results.forEach(function (r) {
+            // Role-based addresses (info@, sales@, etc.) are inherently
+            // generic — never invent an "owner" for them.
+            if (r.validation && r.validation.reason === 'Role-based email') {
+                r.name = '';
+                r.offset = -1;
+                return;
+            }
+            var off = lcHtml.indexOf(r.email);
+            if (off === -1) {
+                // The email was reconstructed from an obfuscated pattern
+                // (e.g. "user [at] domain dot com"). Try the local part.
+                var local = r.email.split('@')[0];
+                off = lcHtml.indexOf(local);
+            }
+            r.offset = off;
+            r.name = off >= 0 ? _findNameNear(html, off) : '';
+            // Boost confidence slightly when a strong nearby name is found.
+            if (r.name) r.confidence = Math.min(100, r.confidence + 5);
+        });
+        return results;
+    };
+
+    // Expose helpers for callers that want to do their own neighbourhood
+    // scans (e.g. the CLI's deep-scan layer that already has the HTML).
+    EmailExtractor._findNameNear = _findNameNear;
+    EmailExtractor._looksLikeName = _looksLikeName;
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // Utility Functions
     // ═══════════════════════════════════════════════════════════════════════════
 
