@@ -310,14 +310,38 @@ function extractFromHtml(html, urlForPlatform, filterOptions) {
     var text = htmlToScannable(html);
     var extracted = EmailExtractor.extractEmails(text, {
         isLinkedIn: !!platformInfo.isLinkedIn,
-        isDataPlatform: !!platformInfo.isDataPlatform
+        isDataPlatform: !!platformInfo.isDataPlatform,
+        rfcStrict: !!(filterOptions && filterOptions.rfcStrict)
     });
     var filtered = EmailExtractor.filterEmails(extracted, filterOptions || {
         minConfidence: 0,
         excludeRoles: true,
-        excludeISP: true
+        // Default: KEEP gmail/yahoo/outlook/etc. so users see them.
+        // Pass `--exclude-isp` (or set excludeISP:true) to drop them.
+        excludeISP: false
     });
     return filtered;
+}
+
+// Build the standard filter-options bag from CLI flags. Centralised so
+// every command (extract / search / footprint) treats the flags the same way.
+//
+// As of v4.6 the default is to KEEP personal/ISP addresses (gmail, yahoo,
+// outlook, …). Pass `--exclude-isp` to drop them. The legacy `--include-isp`
+// flag is still accepted as a no-op alias so old scripts keep working.
+function _filterOptsFromArgs(args) {
+    var minC = args.flags['min-confidence'] != null
+        ? parseInt(args.flags['min-confidence'], 10)
+        : (args.flags.strict ? 30 : 0);
+    var opts = {
+        minConfidence: minC,
+        excludeISP:    !!args.flags['exclude-isp'],
+        excludeRoles:  !args.flags['include-roles'],
+        rfcStrict:     !!args.flags['rfc-strict']
+    };
+    if (args.flags.domain) opts.domainPattern = String(args.flags.domain).replace(/^@/, '');
+    if (args.flags['exclude-catchall']) opts.excludeCatchAll = true;
+    return opts;
 }
 
 // ── DuckDuckGo HTML SERP scraper ────────────────────────────────────────────
@@ -883,17 +907,12 @@ function _historyOptsFromArgs(args) {
 function cmdExtract(args) {
     var target = args.pos[0];
     if (!target) {
-        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--domain D] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--history PATH]');
+        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--exclude-isp] [--include-roles] [--rfc-strict] [--min-confidence N] [--domain D] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--history PATH]');
         process.exit(1);
     }
     var fmt   = args.flags.format || 'txt';
     var out   = args.flags.out;
-    var filterOpts = {
-        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : (args.flags.strict ? 30 : 0),
-        excludeISP:    !args.flags['include-isp'],
-        excludeRoles:  !args.flags['include-roles']
-    };
-    if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
+    var filterOpts = _filterOptsFromArgs(args);
     var followContact = !!args.flags['follow-contact'];
     var historyOpts = _historyOptsFromArgs(args);
     loadHistory(historyOpts.historyPath);
@@ -936,19 +955,14 @@ function cmdExtract(args) {
 function cmdSearch(args) {
     var query = args.pos.join(' ');
     if (!query) {
-        console.error('usage: paris search "<query>" [--country CC] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--include-isp] [--include-roles] [--min-confidence N] [--strict] [--domain D] [--mx] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--cse CX] [--desktop] [--history PATH]');
+        console.error('usage: paris search "<query>" [--country CC] [--industry NAME] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--exclude-isp] [--include-roles] [--rfc-strict] [--min-confidence N] [--strict] [--domain D] [--mx] [--exclude-catchall] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--cse CX] [--desktop] [--history PATH]');
         process.exit(1);
     }
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
     var concurrency = args.flags.concurrency != null ? parseInt(args.flags.concurrency, 10) : 6;
     var fmt = args.flags.format || 'txt';
     var out = args.flags.out;
-    var filterOpts = {
-        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : (args.flags.strict ? 30 : 0),
-        excludeISP:    !args.flags['include-isp'],
-        excludeRoles:  !args.flags['include-roles']
-    };
-    if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
+    var filterOpts = _filterOptsFromArgs(args);
     var followContact = !!args.flags['follow-contact'];
     var historyOpts = _historyOptsFromArgs(args);
     loadHistory(historyOpts.historyPath);
@@ -1073,12 +1087,7 @@ function runSearchInternal(args) {
     var query = args.pos.join(' ');
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
     var concurrency = args.flags.concurrency != null ? parseInt(args.flags.concurrency, 10) : 6;
-    var filterOpts = {
-        minConfidence: args.flags['min-confidence'] != null ? parseInt(args.flags['min-confidence'], 10) : (args.flags.strict ? 30 : 0),
-        excludeISP:    !args.flags['include-isp'],
-        excludeRoles:  !args.flags['include-roles']
-    };
-    if (args.flags.domain) filterOpts.domainPattern = String(args.flags.domain).replace(/^@/, '');
+    var filterOpts = _filterOptsFromArgs(args);
     if (args.flags.country) {
         var f = countryFilter(args.flags.country);
         if (f) query = applyCountryFilter(query, args.flags.country);
@@ -1288,16 +1297,27 @@ function help() {
         '  --format json|csv|txt   Output format (default: txt)',
         '  --max-pages N           Search engine pages to crawl (default: 2)',
         '  --concurrency N         Parallel fetch concurrency (default: 6)',
-        '  --include-isp           Keep ISP/webmail addresses in results',
+        '  --exclude-isp           Drop ISP/webmail addresses (gmail/yahoo/outlook/…)',
+        '                          Default behaviour now KEEPS them; pass this flag to drop.',
+        '  --include-isp           (no-op alias kept for back-compat — KEEP is now the default)',
         '  --include-roles         Keep role-based addresses (info@, sales@…)',
+        '  --rfc-strict            Allow rare RFC 5322 specials in local part (! # $ % & etc.).',
+        '                          Default rejects them — they are almost always regex-noise.',
         '  --min-confidence N      Drop emails below this confidence (default: 0 — keep everything)',
         '  --strict                Shortcut for --min-confidence 30 (the v4.2 default)',
         '  --domain D              Restrict results to a specific domain',
+        '  --industry NAME         Append vertical-specific keywords (saas, fintech, healthcare,',
+        '                          real-estate, education, manufacturing, marketing, legal,',
+        '                          ecommerce, logistics, biotech, energy, hospitality, …)',
+        '                          to the query before crawling.',
         '  --country CC            Restrict to a country\'s ccTLD (ISO 3166-1 alpha-2,',
         '                          e.g. US, GB, DE, FR, BR, IN, JP, AE, ZA …)',
         '  --follow-contact        Deep-DB mode: also fetch each result\'s /contact,',
         '                          /about, /team, /people, /staff, /leadership pages',
+        '                          (also boosts confidence by +10 for emails found on these pages)',
         '  --mx                    MX-validate every result before output',
+        '  --exclude-catchall      With --mx, drop emails on catch-all domains (where the',
+        '                          server accepts any address — these are usually low-value).',
         '',
         'HISTORY / DATE OPTIONS  (re-runs never repeat the same emails)',
         '  --no-skip-seen          Disable history filtering for this run',

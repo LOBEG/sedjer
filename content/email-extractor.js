@@ -269,11 +269,29 @@
     }
 
     /**
+     * "Clean" local-part character set.
+     *
+     * RFC 5322 technically allows `!#$%&'*+/=?^_`{|}~-` in unquoted local
+     * parts, but in practice they are vanishingly rare in real-world business
+     * email addresses, and they are by far the dominant cause of regex over-
+     * matches that pull noise like `john!#%&doe@acme.com` out of HTML
+     * (button text, JSON fragments, ad-tracking blobs glued together by tag
+     * stripping). Reject them by default; opt back into the loose RFC
+     * behaviour with the `rfcStrict` validation option (CLI: `--rfc-strict`).
+     */
+    var CLEAN_LOCAL_RE = /^[a-z0-9](?:[a-z0-9._+\-]*[a-z0-9])?$/;
+
+    /**
      * Validate email format and structure
      * @param {string} email - Email address to validate
+     * @param {Object} [opts] - Validation options
+     * @param {boolean} [opts.rfcStrict] - If true, allow the full RFC 5322
+     *        local-part character set (rare specials like ! # $ % &amp; ` etc.).
+     *        Default is the "clean" character set (alphanumerics + . _ + -).
      * @returns {Object} - Validation result with isValid and reason
      */
-    function validateEmail(email) {
+    function validateEmail(email, opts) {
+        opts = opts || {};
         var result = {
             isValid: false,
             reason: '',
@@ -306,6 +324,19 @@
         if (!localPart || localPart.length > 64) {
             result.reason = 'Invalid local part';
             return result;
+        }
+
+        // Reject "clean" local-parts containing rare RFC 5322 specials by
+        // default — these almost always come from regex over-matches on HTML
+        // junk (e.g. "john!#%&doe@acme.com"). Pass {rfcStrict:true} to keep
+        // the old behaviour. The check is skipped for non-ASCII local parts
+        // (handled separately by INTL_EMAIL_REGEXP) so we don't reject IDN
+        // addresses whose local part contains valid Unicode letters.
+        if (!opts.rfcStrict && /^[\x00-\x7F]+$/.test(localPart)) {
+            if (!CLEAN_LOCAL_RE.test(localPart)) {
+                result.reason = 'Local part contains unusual characters';
+                return result;
+            }
         }
 
         // Domain validation
@@ -407,7 +438,7 @@
                 return;
             }
 
-            var validation = validateEmail(email);
+            var validation = validateEmail(email, { rfcStrict: !!options.rfcStrict });
             if (!validation.isValid) {
                 return;
             }
