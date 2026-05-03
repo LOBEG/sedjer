@@ -826,7 +826,17 @@
                 // Last capture is always the inner text; first regex has 1
                 // group, the others have 2 (tag name + content).
                 var inner = m[m.length - 1] || '';
-                inner = inner.replace(/<[^>]+>/g, '').replace(_BIDI_CTRL_RE, '').trim();
+                // Iteratively strip nested tags until stable. A single
+                // /<[^>]+>/g pass leaves orphaned "<script foo" (no '>')
+                // behind on malformed input — see CodeQL js/incomplete-
+                // multi-character-sanitization. Iterating to a fixed point
+                // is safe because each pass is monotonically shorter.
+                var prev;
+                do {
+                    prev = inner;
+                    inner = inner.replace(/<[^>]*>/g, '');
+                } while (inner !== prev);
+                inner = inner.replace(/[<>]/g, '').replace(_BIDI_CTRL_RE, '').trim();
                 if (!inner) {
                     if (m.index === re.lastIndex) re.lastIndex++;
                     continue;
@@ -877,8 +887,8 @@
     function _htmlToTextPreservingInline(html) {
         if (!html || typeof html !== 'string') return '';
         return String(html)
-            .replace(/<script\b[^>]*>[\s\S]*?<\/\s*script\s*>/gi, ' ')
-            .replace(/<style\b[^>]*>[\s\S]*?<\/\s*style\s*>/gi, ' ')
+            .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
+            .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
             .replace(/<!--[\s\S]*?-->/g, ' ')
             // Empty-string substitution for inline tags so split-span emails
             // reconstruct cleanly.
@@ -915,7 +925,7 @@
     function _extractScriptEmails(html) {
         var out = [];
         if (!html || typeof html !== 'string') return out;
-        var scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/\s*script\s*>/gi;
+        var scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi;
         var m;
         while ((m = scriptRe.exec(html)) !== null) {
             var attrs = m[1] || '';
