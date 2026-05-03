@@ -193,6 +193,21 @@ Runner.prototype.extract = function () {
     // Detect platform for enhanced extraction
     var platformInfo = window.EmailExtractor ? window.EmailExtractor.detectPlatform(window.location.href) : { platform: 'generic' };
 
+    // v4.9: pull popup-controlled filter options from the runner config (see
+    // background/runner.js eventData.filterOpts). Defaults preserve legacy
+    // extension behaviour (minConfidence:30, excludeRoles:true).
+    var optsFromBg = (this.options && this.options.filterOpts) || {};
+    var serpFilterOpts = {
+        minConfidence: (typeof optsFromBg.minConfidence === 'number') ? optsFromBg.minConfidence : 30,
+        excludeRoles: (optsFromBg.excludeRoles !== undefined) ? !!optsFromBg.excludeRoles : true
+    };
+    if (optsFromBg.excludeISP) serpFilterOpts.excludeISP = true;
+    if (optsFromBg.rfcStrict)  serpFilterOpts.rfcStrict  = true;
+    // extractEmails / extractFromHtml read rfcStrict via validateEmail.
+    var extractorOpts = Object.assign({}, platformInfo, {
+        rfcStrict: !!optsFromBg.rfcStrict
+    });
+
     if (isCSE) {
         // Google CSE: extract from full result text (not just snippet)
         $('.gsc-result').each(function () {
@@ -208,15 +223,12 @@ Runner.prototype.extract = function () {
                 var rawHtml = (this.outerHTML || '');
                 var extractedEmails;
                 if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
-                    extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, platformInfo);
+                    extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, extractorOpts);
                 } else {
-                    extractedEmails = window.EmailExtractor.extractEmails($this.text(), platformInfo);
+                    extractedEmails = window.EmailExtractor.extractEmails($this.text(), extractorOpts);
                 }
                 // Apply confidence threshold and dedupe via the module
-                var filtered = window.EmailExtractor.filterEmails(extractedEmails, {
-                    minConfidence: 30,
-                    excludeRoles: true
-                });
+                var filtered = window.EmailExtractor.filterEmails(extractedEmails, serpFilterOpts);
                 var emailStrings = window.EmailExtractor.getUniqueEmails(filtered);
                 _runner._collectEmails(emailStrings);
             } else {
@@ -253,14 +265,11 @@ Runner.prototype.extract = function () {
                 var rawHtml = (this.outerHTML || '');
                 var extractedEmails;
                 if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
-                    extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, platformInfo);
+                    extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, extractorOpts);
                 } else {
-                    extractedEmails = window.EmailExtractor.extractEmails($el.text(), platformInfo);
+                    extractedEmails = window.EmailExtractor.extractEmails($el.text(), extractorOpts);
                 }
-                var filtered = window.EmailExtractor.filterEmails(extractedEmails, {
-                    minConfidence: 30,
-                    excludeRoles: true
-                });
+                var filtered = window.EmailExtractor.filterEmails(extractedEmails, serpFilterOpts);
                 var emailStrings = window.EmailExtractor.getUniqueEmails(filtered);
                 _runner._collectEmails(emailStrings);
             } else {

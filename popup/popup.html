@@ -352,6 +352,34 @@
                                     <b>Skip emails seen in previous runs</b>
                                 </label>
                             </div>
+                            <div class="checkbox" style="margin-bottom: -5px;"
+                                 title="Drop addresses whose local part is a generic role (info, sales, support, …). CLI: --include-roles to keep them.">
+                                <label>
+                                    <input type="checkbox" id="excludeRolesCheckbox" checked>
+                                    <b>Exclude role addresses</b>
+                                </label>
+                            </div>
+                            <div class="checkbox" style="margin-bottom: -5px;"
+                                 title="Drop ISP/webmail addresses (gmail.com, yahoo.com, outlook.com, …). CLI: --exclude-isp.">
+                                <label>
+                                    <input type="checkbox" id="excludeIspCheckbox" checked>
+                                    <b>Exclude ISP/webmail</b>
+                                </label>
+                            </div>
+                            <div class="checkbox" style="margin-bottom: -5px;"
+                                 title="Apply RFC 5322 strict validation (allow rare specials !#$%&'*/=?^`{|}~ in the local part). CLI: --rfc-strict.">
+                                <label>
+                                    <input type="checkbox" id="rfcStrictCheckbox">
+                                    <b>RFC 5322 strict</b>
+                                </label>
+                            </div>
+                            <div class="form-group" style="margin-top: 6px; margin-bottom: 0;"
+                                 title="Drop emails whose extractor confidence is below this value (0 keeps everything). CLI: --min-confidence.">
+                                <label for="minConfidenceInput" style="font-weight: normal; margin-bottom: 2px;">
+                                    <small>Min confidence (0–100)</small>
+                                </label>
+                                <input type="number" min="0" max="100" step="5" class="form-control input-sm" id="minConfidenceInput" value="30">
+                            </div>
                             <div style="margin-top: 4px;">
                                 <button type="button" class="btn btn-default btn-xs" id="clearSeenBtn"
                                         title="Wipe the persistent skip-seen history kept in chrome.storage.local.seenEmails">

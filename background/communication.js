@@ -84,6 +84,30 @@ _addListener("state:setMxValidation", function (data, sender, respond) {
     respond({ok: true});
 });
 
+// v4.9: filter-options state setters — propagate popup toggles to the SW so
+// an in-progress run picks up the new values immediately. Mirrors the existing
+// state:setRemoveDuplicates / state:setDeepScan / state:setMxValidation
+// pattern. Each handler clamps/sanitises the incoming value defensively.
+_addListener("state:setMinConfidence", function (data, sender, respond) {
+    var v = parseInt(data && data.value, 10);
+    if (!isFinite(v) || v < 0) v = 0;
+    if (v > 100) v = 100;
+    serpdigger.runner.current.minConfidence = v;
+    respond({ok: true});
+});
+_addListener("state:setExcludeRoles", function (data, sender, respond) {
+    serpdigger.runner.current.excludeRoles = !!(data && data.value);
+    respond({ok: true});
+});
+_addListener("state:setExcludeIsp", function (data, sender, respond) {
+    serpdigger.runner.current.excludeIsp = !!(data && data.value);
+    respond({ok: true});
+});
+_addListener("state:setRfcStrict", function (data, sender, respond) {
+    serpdigger.runner.current.rfcStrict = !!(data && data.value);
+    respond({ok: true});
+});
+
 _addListener("state:validateEmails", function (data, sender, respond) {
     serpdigger.validateEmails(function(results) {
         respond(results);

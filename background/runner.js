@@ -17,7 +17,16 @@ serpdigger.runner = {
         pagesForCurrentQuery: 0,
         maxPagesPerQuery: 10,
         mxValidation: false,
-        mxResults: {}
+        mxResults: {},
+        // v4.9: filter-options parity with CLI. Defaults preserve current
+        // extension behaviour (min-confidence 30, exclude roles, exclude ISP,
+        // loose RFC). Overridden at module load by chrome.storage.local and at
+        // runtime via state:setMinConfidence / state:setExcludeRoles /
+        // state:setExcludeIsp / state:setRfcStrict.
+        minConfidence: 30,
+        excludeRoles: true,
+        excludeIsp: true,
+        rfcStrict: false
     } 
 };
 
@@ -68,6 +77,31 @@ chrome.storage.local.get('removeDuplicates', function (items) {
         serpdigger.runner.current.removeDuplicates = items.removeDuplicates;
     }
 })
+
+// v4.9: filter-options load (mirrors the CLI's --min-confidence /
+// --include-roles / --exclude-isp / --rfc-strict flags). Each is independently
+// storable so the popup can rehydrate after a reload.
+chrome.storage.local.get('minConfidence', function (items) {
+    if (typeof items.minConfidence === 'number' && isFinite(items.minConfidence) &&
+        items.minConfidence >= 0 && items.minConfidence <= 100) {
+        serpdigger.runner.current.minConfidence = items.minConfidence;
+    }
+});
+chrome.storage.local.get('excludeRoles', function (items) {
+    if (items.excludeRoles !== undefined && items.excludeRoles !== null) {
+        serpdigger.runner.current.excludeRoles = !!items.excludeRoles;
+    }
+});
+chrome.storage.local.get('excludeIsp', function (items) {
+    if (items.excludeIsp !== undefined && items.excludeIsp !== null) {
+        serpdigger.runner.current.excludeIsp = !!items.excludeIsp;
+    }
+});
+chrome.storage.local.get('rfcStrict', function (items) {
+    if (items.rfcStrict !== undefined && items.rfcStrict !== null) {
+        serpdigger.runner.current.rfcStrict = !!items.rfcStrict;
+    }
+});
 
 // ── Deep-scan concurrency ──────────────────────────────────────────────────
 // Controls how many _deepFetchPage requests may be in-flight simultaneously.
@@ -172,7 +206,17 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
                 queryObject: current.queries[current.currentQuery],
                 deepScan: current.deepScan,
                 pagesScanned: current.pagesForCurrentQuery,
-                maxPages: current.maxPagesPerQuery
+                maxPages: current.maxPagesPerQuery,
+                // v4.9: filter-options pushed to the content-script SERP path
+                // so #search/#b_results/.gsc-result extraction honours the
+                // popup's min-confidence / exclude-roles / exclude-ISP /
+                // RFC-strict toggles (mirrors CLI _filterOptsFromArgs).
+                filterOpts: {
+                    minConfidence: current.minConfidence,
+                    excludeRoles: !!current.excludeRoles,
+                    excludeISP:  !!current.excludeIsp,
+                    rfcStrict:   !!current.rfcStrict
+                }
             }
         });
 
@@ -331,7 +375,11 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         // Run the SAME extraction the content script uses
         var extractorOpts = {
             isLinkedIn: !!platformInfo.isLinkedIn,
-            isDataPlatform: !!platformInfo.isDataPlatform
+            isDataPlatform: !!platformInfo.isDataPlatform,
+            // v4.9: thread RFC-strict toggle into validateEmail() so addresses
+            // with rare RFC 5322 specials (!#$%&'*/=?^`{|}~) survive when the
+            // user opted in via the popup.
+            rfcStrict: !!serpdigger.runner.current.rfcStrict
         };
         var extracted = EmailExtractor.extractEmails(combinedText, extractorOpts);
 
@@ -365,8 +413,12 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
             }
         }
 
-        // Apply filtering: minimum confidence, role exclusion, and (if a
-        // pattern is supplied) restrict to that domain — otherwise exclude ISP.
+        // Apply filtering: v4.9 — pull min-confidence / exclude-roles /
+        // exclude-isp from serpdigger.runner.current so the popup's filter
+        // controls drive behaviour, not hardcoded values. The pattern-domain
+        // rule still wins: when a domain pattern is supplied we restrict to it
+        // (and ignore the user's excludeIsp toggle for that run, since the
+        // domain restriction is strictly stronger).
         var patternDomain = null;
         if (pattern) {
             patternDomain = pattern.replace(/"/g, '').trim();
@@ -375,13 +427,19 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
             }
         }
 
+        var _cur = serpdigger.runner.current;
+        var _minC = (typeof _cur.minConfidence === 'number' && isFinite(_cur.minConfidence) &&
+                     _cur.minConfidence >= 0 && _cur.minConfidence <= 100) ? _cur.minConfidence : 30;
         var filterOpts = {
-            minConfidence: 30,
-            excludeRoles: true
+            minConfidence: _minC,
+            excludeRoles: !!_cur.excludeRoles,
+            rfcStrict: !!_cur.rfcStrict
         };
         if (patternDomain) {
             filterOpts.domainPattern = patternDomain;
-        } else {
+        } else if (_cur.excludeIsp !== false) {
+            // Default and user-enabled both → drop ISP/webmail. excludeIsp:false
+            // explicitly opts out (mirrors CLI's default of keeping ISP).
             filterOpts.excludeISP = true;
         }
 

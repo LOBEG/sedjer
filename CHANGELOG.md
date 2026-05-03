@@ -2,6 +2,39 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.9.0] - 2026-05-03
+
+### 🌐 Browser-extension parity, round 2 — filter-options exposure
+
+The CLI exposes four filter knobs (`--min-confidence`, `--include-roles`, `--exclude-isp`, `--rfc-strict`) that drive `EmailExtractor.filterEmails()` and `validateEmail()`. The extension hardcoded all four in two places:
+- `content/duckduckgo.js` (SERP path, lines ~217 & ~261): `{ minConfidence: 30, excludeRoles: true }`
+- `background/runner.js#_deepFetchPage` (lines ~412): `{ minConfidence: 30, excludeRoles: true }` plus a pattern-aware `excludeISP: true`
+
+v4.9 surfaces all four as popup controls so the extension matches CLI flexibility.
+
+#### New popup controls (in the deep-scan settings column)
+- `#minConfidenceInput` — number 0–100, default `30`. CLI: `--min-confidence`.
+- `#excludeRolesCheckbox` — default checked. CLI: `--include-roles` to negate.
+- `#excludeIspCheckbox` — default checked (intentionally opposite of CLI default to preserve current extension UX). CLI: `--exclude-isp`.
+- `#rfcStrictCheckbox` — default unchecked. CLI: `--rfc-strict`. Threaded into `validateEmail()` via `extractEmails`/`extractFromHtml` `options.rfcStrict`, which un-rejects rare RFC 5322 specials in the local part (`!#$%&'*/=?^`{|}~`).
+
+#### Wiring
+- **`popup/query.js`**: `storeMinConfidence` / `storeExcludeRoles` / `storeExcludeIsp` / `storeRfcStrict` writing to `chrome.storage.local.{minConfidence,excludeRoles,excludeIsp,rfcStrict}`. Matching `restore*` functions pre-fill the inputs at popup open with safe defaults.
+- **`background/runner.js`**: 4 fields added to `serpdigger.runner.current` defaults; 4 `chrome.storage.local.get` blocks load them at SW init mirroring the existing pattern. `_deepFetchPage` now reads `serpdigger.runner.current` instead of using hardcoded values, with the existing pattern-domain rule preserved (it still wins over `excludeIsp` when a domain pattern is present). Filter opts are also pushed into the content-script `eventName: 'run'` `eventData.filterOpts` payload so SERP extraction honours them.
+- **`background/communication.js`**: 4 new `state:setMinConfidence` / `state:setExcludeRoles` / `state:setExcludeIsp` / `state:setRfcStrict` listeners propagate popup toggles to the SW so an in-progress run picks up the new values immediately, exactly like `state:setRemoveDuplicates` / `state:setDeepScan` / `state:setMxValidation`.
+- **`content/duckduckgo.js`**: SERP `extract()` reads `runner.options.filterOpts` and uses it as the basis of both `serpFilterOpts` (for `filterEmails`) and `extractorOpts` (for `extractEmails`/`extractFromHtml` so `rfcStrict` reaches `validateEmail`). Defaults preserve legacy hardcoded behaviour when the popup hasn't opted in.
+
+### Compatibility
+- Default values match what the extension already did (min-conf 30, exclude roles, exclude ISP, loose RFC). Users who never touch the new controls see no behaviour change.
+- Pattern-aware ISP rule preserved: when a footprint specifies a domain (e.g. `@acme.com`) the deep-scan path restricts to that domain regardless of the `excludeIsp` toggle — the domain restriction is strictly stronger.
+- CLI behaviour unchanged.
+
+### Validation
+- Syntax: `background/runner.js`, `background/communication.js`, `popup/query.js`, `popup/popup.html`, `content/duckduckgo.js` all pass.
+- Filter-options smoke (mock fixture): default extension settings drop `info@gmail.com` (role + ISP) and `bob.smith!#=@acme.com` (validateEmail loose), keep `jane@acme.com`. With `rfcStrict:true`, `bob.smith!#=@acme.com` survives. With `excludeRoles:false, excludeISP:true`, `info@gmail.com` is still dropped by the ISP rule. All transitions correct.
+- v4.7 regression: end-to-end fixture (Cloudflare cfemail + CSS split + RTL bdo + split-span + script + standard) still produces the expected 6 emails.
+- Version bumped to 4.9.0 (`package.json`, `manifest.json`).
+
 ## [4.8.0] - 2026-05-03
 
 ### 🌐 Browser-extension parity, round 1

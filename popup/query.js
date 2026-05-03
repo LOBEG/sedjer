@@ -80,11 +80,69 @@ function storeSkipSeenEmails(val) {
     chrome.storage.local.set({ skipSeenEmails: !!val });
 }
 
+// v4.9: filter-options parity with CLI (--min-confidence / --include-roles /
+// --exclude-isp / --rfc-strict). Stored individually in chrome.storage.local
+// and re-applied at run start by background/runner.js (the SW reads the four
+// keys at module init and via state:set* messages whenever the popup toggles
+// them, mirroring how removeDuplicates/deepScan/mxValidation are wired).
+function storeMinConfidence(n) {
+    var v = parseInt(n, 10);
+    if (!isFinite(v) || v < 0) v = 0;
+    if (v > 100) v = 100;
+    chrome.storage.local.set({ minConfidence: v });
+}
+function storeExcludeRoles(val) {
+    chrome.storage.local.set({ excludeRoles: !!val });
+}
+function storeExcludeIsp(val) {
+    chrome.storage.local.set({ excludeIsp: !!val });
+}
+function storeRfcStrict(val) {
+    chrome.storage.local.set({ rfcStrict: !!val });
+}
+
 function restoreSkipSeenEmails() {
     chrome.storage.local.get('skipSeenEmails', function (items) {
         if ($('#skipSeenEmails').length) {
             $('#skipSeenEmails').get(0).checked = !!items.skipSeenEmails;
         }
+    });
+}
+
+// v4.9: filter-options restore — defaults preserve current extension behaviour
+// (minConfidence:30, excludeRoles:true, excludeIsp:true, rfcStrict:false). Note
+// the excludeIsp default is intentionally opposite of the CLI default (CLI keeps
+// ISP), preserving what extension users see today.
+function restoreMinConfidence() {
+    chrome.storage.local.get('minConfidence', function (items) {
+        if (!$('#minConfidenceInput').length) return;
+        var v = items.minConfidence;
+        if (typeof v !== 'number' || !isFinite(v) || v < 0) v = 30;
+        $('#minConfidenceInput').val(v);
+    });
+}
+function restoreExcludeRoles() {
+    chrome.storage.local.get('excludeRoles', function (items) {
+        if (!$('#excludeRolesCheckbox').length) return;
+        var v = (items.excludeRoles === undefined || items.excludeRoles === null)
+            ? true
+            : !!items.excludeRoles;
+        $('#excludeRolesCheckbox').get(0).checked = v;
+    });
+}
+function restoreExcludeIsp() {
+    chrome.storage.local.get('excludeIsp', function (items) {
+        if (!$('#excludeIspCheckbox').length) return;
+        var v = (items.excludeIsp === undefined || items.excludeIsp === null)
+            ? true
+            : !!items.excludeIsp;
+        $('#excludeIspCheckbox').get(0).checked = v;
+    });
+}
+function restoreRfcStrict() {
+    chrome.storage.local.get('rfcStrict', function (items) {
+        if (!$('#rfcStrictCheckbox').length) return;
+        $('#rfcStrictCheckbox').get(0).checked = !!items.rfcStrict;
     });
 }
 
@@ -538,6 +596,37 @@ _onInit(function () {
         });
     }
 
+    // v4.9: filter-option toggles → mirror to chrome.storage.local AND push to
+    // the SW so an in-progress run picks up the new value immediately, exactly
+    // like state:setRemoveDuplicates / state:setDeepScan / state:setMxValidation.
+    if ($('#minConfidenceInput').length) {
+        $('#minConfidenceInput').on('input change keyup', function () {
+            var v = parseInt($(this).val(), 10);
+            if (!isFinite(v) || v < 0) v = 0;
+            if (v > 100) v = 100;
+            storeMinConfidence(v);
+            _sendEvent('state:setMinConfidence', {value: v});
+        });
+    }
+    if ($('#excludeRolesCheckbox').length) {
+        $('#excludeRolesCheckbox').on('click', function () {
+            storeExcludeRoles(this.checked);
+            _sendEvent('state:setExcludeRoles', {value: this.checked});
+        });
+    }
+    if ($('#excludeIspCheckbox').length) {
+        $('#excludeIspCheckbox').on('click', function () {
+            storeExcludeIsp(this.checked);
+            _sendEvent('state:setExcludeIsp', {value: this.checked});
+        });
+    }
+    if ($('#rfcStrictCheckbox').length) {
+        $('#rfcStrictCheckbox').on('click', function () {
+            storeRfcStrict(this.checked);
+            _sendEvent('state:setRfcStrict', {value: this.checked});
+        });
+    }
+
     $('#maxPagesInput').on('input change keyup', function () {
         var val = parseInt($(this).val(), 10);
         if (!val || val < 1) val = 1;
@@ -592,6 +681,10 @@ _onInit(function () {
     restoreCountry();
     restoreCountryTld();
     restoreSkipSeenEmails();
+    restoreMinConfidence();
+    restoreExcludeRoles();
+    restoreExcludeIsp();
+    restoreRfcStrict();
     refreshSeenHistoryCount();
     
     log.i('after query : ', $('#delayInput').val());

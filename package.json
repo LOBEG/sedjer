@@ -1,6 +1,6 @@
 {
   "name": "paris-email-extractor",
-  "version": "4.8.0",
+  "version": "4.9.0",
   "description": "Paris Email Extractor — Advanced Email Discovery & Extraction Tool. Runs as a Chrome/Edge browser extension AND as a standalone Node.js CLI / packaged executable.",
   "bin": {
     "paris": "cli/paris.js"
