@@ -1125,7 +1125,7 @@ function _historyOptsFromArgs(args) {
 function cmdExtract(args) {
     var target = args.pos[0];
     if (!target) {
-        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--exclude-isp] [--include-roles] [--rfc-strict] [--min-confidence N] [--domain D] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--history PATH]');
+        console.error('usage: paris extract <url|file> [--out F] [--format json|csv|txt] [--exclude-isp] [--include-roles] [--rfc-strict] [--min-confidence N] [--domain D] [--follow-contact] [--smtp] [--smtp-timeout MS] [--smtp-helo H] [--smtp-from A] [--smtp-concurrency N] [--exclude-catchall] [--exclude-disposable] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--history PATH]');
         process.exit(1);
     }
     var fmt   = args.flags.format || 'txt';
@@ -1156,17 +1156,26 @@ function cmdExtract(args) {
         function emit(extraNote) {
             var filtered = applyHistoryFilter(records, historyOpts);
             recordHistory(filtered, { command: 'extract' });
-            process.stderr.write('Found ' + filtered.length + ' email(s)' + (extraNote || '') + '\n');
-            writeOutput(formatOutput(filtered, fmt), out, { fmt: fmt, command: 'extract', label: _labelFromExtractTarget(target), desktop: !!args.flags.desktop });
+            // Disposable + SMTP RCPT-level verification (no-op when the
+            // corresponding flags are absent). SMTP runs AFTER history
+            // filtering so we don't pay port-25 cost on already-seen emails.
+            filtered = _applyDisposableFilter(filtered, args);
+            return _applySmtpStep(filtered, args).then(function (filtered2) {
+                if (filtered2 && filtered2.length && filtered2.some(function (r) { return r && r.smtpStatus; })) {
+                    recordHistory(filtered2, { command: 'extract' });
+                }
+                process.stderr.write('Found ' + filtered2.length + ' email(s)' + (extraNote || '') + '\n');
+                writeOutput(formatOutput(filtered2, fmt), out, { fmt: fmt, command: 'extract', label: _labelFromExtractTarget(target), desktop: !!args.flags.desktop });
+            });
         }
 
         if (followContact && page.src) {
             return followContactSubpages(page.src).then(function (pages) {
                 pages.forEach(function (p) { ingest(p.html, p.url); });
-                emit(' (incl. ' + pages.length + ' sub-page[s])');
+                return emit(' (incl. ' + pages.length + ' sub-page[s])');
             });
         }
-        emit('');
+        return emit('');
     });
 }
 
@@ -1716,6 +1725,29 @@ function _askYesNo(rl, question, defaultYes) {
     });
 }
 
+// Prompt for SMTP / disposable / catch-all options. Mutates and returns
+// the supplied `flags` object so the caller can pass it to a cmdXxx.
+// Skipped silently when the user answers "no" to the first probe — none
+// of these flags are appropriate as a hidden default.
+function _askSmtpFlags(rl, flags) {
+    return _askYesNo(rl, 'SMTP-verify each result via real RCPT (slow, port 25)?', !!INTERACTIVE_SETTINGS.smtp)
+        .then(function (smtp) {
+            if (smtp) {
+                flags.smtp = true;
+                flags['smtp-concurrency'] = INTERACTIVE_SETTINGS.smtpConcurrency;
+                flags['smtp-timeout']     = INTERACTIVE_SETTINGS.smtpTimeoutMs;
+            }
+            return _askYesNo(rl, 'Drop emails on disposable/throwaway-mail providers (mailinator, tempmail, …)?', !!INTERACTIVE_SETTINGS.excludeDisposable);
+        }).then(function (disp) {
+            if (disp) flags['exclude-disposable'] = true;
+            if (!flags.smtp) return false;
+            return _askYesNo(rl, 'Drop emails on catch-all domains (those that accept any local part)?', !!INTERACTIVE_SETTINGS.excludeCatchAll);
+        }).then(function (ca) {
+            if (ca) flags['exclude-catchall'] = true;
+            return flags;
+        });
+}
+
 function _printBanner() {
     var line = '═'.repeat(72);
     process.stdout.write([
@@ -1758,7 +1790,12 @@ var INTERACTIVE_SETTINGS = {
     maxPages: 3,
     minConfidence: null,    // null = use default rule
     saveFolder: '',         // '' = Desktop
-    cseCx: process.env.PARIS_CSE_CX || ''  // Google Programmable Search Engine ID; '' = use DuckDuckGo
+    cseCx: process.env.PARIS_CSE_CX || '',  // Google Programmable Search Engine ID; '' = use DuckDuckGo
+    smtp: false,            // RCPT-level SMTP verification (port 25)
+    smtpConcurrency: 4,     // Per-domain concurrency for SMTP probes
+    smtpTimeoutMs: 10000,   // Per-connection SMTP timeout
+    excludeDisposable: false, // Drop mailinator/tempmail/… domains
+    excludeCatchAll: false  // With --smtp, drop catch-all domains
 };
 
 function _commonFlagsFromSettings(extra) {
@@ -1768,6 +1805,13 @@ function _commonFlagsFromSettings(extra) {
     if (INTERACTIVE_SETTINGS.country) f.country = INTERACTIVE_SETTINGS.country;
     if (INTERACTIVE_SETTINGS.industry) f.industry = INTERACTIVE_SETTINGS.industry;
     if (!INTERACTIVE_SETTINGS.skipSeen) f['no-skip-seen'] = true;
+    if (INTERACTIVE_SETTINGS.smtp) {
+        f.smtp = true;
+        f['smtp-concurrency'] = INTERACTIVE_SETTINGS.smtpConcurrency;
+        f['smtp-timeout']     = INTERACTIVE_SETTINGS.smtpTimeoutMs;
+    }
+    if (INTERACTIVE_SETTINGS.excludeDisposable) f['exclude-disposable'] = true;
+    if (INTERACTIVE_SETTINGS.excludeCatchAll)   f['exclude-catchall']   = true;
     if (extra) Object.keys(extra).forEach(function (k) { f[k] = extra[k]; });
     return f;
 }
@@ -1827,10 +1871,10 @@ function _menuExtract(rl) {
                 var fmt;
                 return _ask(rl, 'Output format (txt/csv/json)', 'csv').then(function (f) {
                     fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'csv';
-                    return _captureOutput(function () {
-                        var args = { pos: [target], flags: _commonFlagsFromSettings({ format: fmt }) };
-                        if (followContact) args.flags['follow-contact'] = true;
-                        return cmdExtract(args);
+                    var args = { pos: [target], flags: _commonFlagsFromSettings({ format: fmt }) };
+                    if (followContact) args.flags['follow-contact'] = true;
+                    return _askSmtpFlags(rl, args.flags).then(function () {
+                        return _captureOutput(function () { return cmdExtract(args); });
                     });
                 }).then(function (out) { return _afterAction(rl, out.captured); });
             });
@@ -1846,14 +1890,14 @@ function _menuSearch(rl) {
                     return _askYesNo(rl, 'MX-validate every result before saving?', false).then(function (mx) {
                         return _ask(rl, 'Output format (txt/csv/json)', 'csv').then(function (f) {
                             var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'csv';
-                            return _captureOutput(function () {
-                                var args = { pos: [q], flags: _commonFlagsFromSettings({
-                                    format: fmt,
-                                    'max-pages': parseInt(mp, 10) || INTERACTIVE_SETTINGS.maxPages
-                                }) };
-                                if (followContact) args.flags['follow-contact'] = true;
-                                if (mx) args.flags.mx = true;
-                                return cmdSearch(args);
+                            var args = { pos: [q], flags: _commonFlagsFromSettings({
+                                format: fmt,
+                                'max-pages': parseInt(mp, 10) || INTERACTIVE_SETTINGS.maxPages
+                            }) };
+                            if (followContact) args.flags['follow-contact'] = true;
+                            if (mx) args.flags.mx = true;
+                            return _askSmtpFlags(rl, args.flags).then(function () {
+                                return _captureOutput(function () { return cmdSearch(args); });
                             }).then(function (out) { return _afterAction(rl, out.captured); });
                         });
                     });
@@ -1896,14 +1940,14 @@ function _runFootprint(rl, match) {
             return _askYesNo(rl, 'MX-validate every result?', false).then(function (mx) {
                 return _ask(rl, 'Output format (txt/csv/json)', 'csv').then(function (f) {
                     var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'csv';
-                    return _captureOutput(function () {
-                        var args = { pos: [match.name], flags: _commonFlagsFromSettings({
-                            format: fmt,
-                            'max-pages': parseInt(mp, 10) || INTERACTIVE_SETTINGS.maxPages
-                        }) };
-                        if (followContact) args.flags['follow-contact'] = true;
-                        if (mx) args.flags.mx = true;
-                        return cmdFootprint(args);
+                    var args = { pos: [match.name], flags: _commonFlagsFromSettings({
+                        format: fmt,
+                        'max-pages': parseInt(mp, 10) || INTERACTIVE_SETTINGS.maxPages
+                    }) };
+                    if (followContact) args.flags['follow-contact'] = true;
+                    if (mx) args.flags.mx = true;
+                    return _askSmtpFlags(rl, args.flags).then(function () {
+                        return _captureOutput(function () { return cmdFootprint(args); });
                     }).then(function (out) { return _afterAction(rl, out.captured); });
                 });
             });
@@ -1950,12 +1994,12 @@ function _menuPermute(rl) {
                         return _askYesNo(rl, 'MX-validate and keep only valid?', true).then(function (mx) {
                             return _ask(rl, 'Output format (txt/csv/json)', 'txt').then(function (f) {
                                 var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'txt';
-                                return _captureOutput(function () {
-                                    var args = { pos: [first, last, dom], flags: { format: fmt } };
-                                    if (mid) args.flags.middle = mid;
-                                    if (unusual) args.flags.unusual = true;
-                                    if (mx) args.flags.mx = true;
-                                    return cmdPermute(args);
+                                var args = { pos: [first, last, dom], flags: { format: fmt } };
+                                if (mid) args.flags.middle = mid;
+                                if (unusual) args.flags.unusual = true;
+                                if (mx) args.flags.mx = true;
+                                return _askSmtpFlags(rl, args.flags).then(function () {
+                                    return _captureOutput(function () { return cmdPermute(args); });
                                 }).then(function (out) { return _afterAction(rl, out.captured); });
                             });
                         });
@@ -1973,8 +2017,9 @@ function _menuMx(rl) {
         if (!emails.length) return;
         return _ask(rl, 'Output format (txt/csv/json)', 'txt').then(function (f) {
             var fmt = (f === 'json' || f === 'csv' || f === 'txt') ? f : 'txt';
-            return _captureOutput(function () {
-                return cmdMx({ pos: emails, flags: { format: fmt } });
+            var args = { pos: emails, flags: { format: fmt } };
+            return _askSmtpFlags(rl, args.flags).then(function () {
+                return _captureOutput(function () { return cmdMx(args); });
             }).then(function (out) { return _afterAction(rl, out.captured); });
         });
     });
@@ -2019,6 +2064,9 @@ function _menuSettings(rl) {
     process.stdout.write('    maxPages=' + INTERACTIVE_SETTINGS.maxPages + '\n');
     process.stdout.write('    saveFolder=' + (INTERACTIVE_SETTINGS.saveFolder || '(Desktop)') + '\n');
     process.stdout.write('    cseCx=' + (INTERACTIVE_SETTINGS.cseCx ? INTERACTIVE_SETTINGS.cseCx : '(DuckDuckGo)') + '\n');
+    process.stdout.write('    smtp=' + INTERACTIVE_SETTINGS.smtp + '   (RCPT-level SMTP verify; port 25)\n');
+    process.stdout.write('    smtpConcurrency=' + INTERACTIVE_SETTINGS.smtpConcurrency + '   smtpTimeoutMs=' + INTERACTIVE_SETTINGS.smtpTimeoutMs + '\n');
+    process.stdout.write('    excludeDisposable=' + INTERACTIVE_SETTINGS.excludeDisposable + '   excludeCatchAll=' + INTERACTIVE_SETTINGS.excludeCatchAll + '\n');
     return _askYesNo(rl, 'Toggle skip-seen?', false).then(function (yes) {
         if (yes) INTERACTIVE_SETTINGS.skipSeen = !INTERACTIVE_SETTINGS.skipSeen;
     }).then(function () {
@@ -2049,6 +2097,28 @@ function _menuSettings(rl) {
         return _ask(rl, 'CSE engine ID (cx) — see cse/CSE.md (blank = DuckDuckGo)', INTERACTIVE_SETTINGS.cseCx || '');
     }).then(function (cx) {
         INTERACTIVE_SETTINGS.cseCx = String(cx || '').trim();
+    }).then(function () {
+        return _askYesNo(rl, 'Toggle SMTP RCPT-level verification (port 25)?', false);
+    }).then(function (yes) {
+        if (yes) INTERACTIVE_SETTINGS.smtp = !INTERACTIVE_SETTINGS.smtp;
+    }).then(function () {
+        return _ask(rl, 'SMTP per-domain concurrency', String(INTERACTIVE_SETTINGS.smtpConcurrency));
+    }).then(function (c) {
+        var n = parseInt(c, 10);
+        if (n >= 1 && n <= 64) INTERACTIVE_SETTINGS.smtpConcurrency = n;
+    }).then(function () {
+        return _ask(rl, 'SMTP per-connection timeout (ms)', String(INTERACTIVE_SETTINGS.smtpTimeoutMs));
+    }).then(function (t) {
+        var n = parseInt(t, 10);
+        if (n >= 1000 && n <= 120000) INTERACTIVE_SETTINGS.smtpTimeoutMs = n;
+    }).then(function () {
+        return _askYesNo(rl, 'Toggle drop disposable/throwaway-mail domains?', false);
+    }).then(function (yes) {
+        if (yes) INTERACTIVE_SETTINGS.excludeDisposable = !INTERACTIVE_SETTINGS.excludeDisposable;
+    }).then(function () {
+        return _askYesNo(rl, 'Toggle drop catch-all domains (only with --smtp)?', false);
+    }).then(function (yes) {
+        if (yes) INTERACTIVE_SETTINGS.excludeCatchAll = !INTERACTIVE_SETTINGS.excludeCatchAll;
     }).then(function () {
         process.stdout.write('  ✔ Settings updated.\n');
     });
