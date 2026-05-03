@@ -31,7 +31,12 @@ serpdigger.runner = {
         followContact: false,
         // v5.0: footprint-name in download filename (CLI v4.5 parity). Set
         // by serpdigger.run() from queries.footprintLabel (resolved popup-side).
-        footprintLabel: ''
+        footprintLabel: '',
+        // v5.1: persistent post-extraction date filters (CLI --since / --until
+        // parity). Empty string ⇒ no filter. Compared against the firstSeen
+        // day in the persistent seen-history (chrome.storage.local.seenEmails).
+        historySince: '',
+        historyUntil: ''
     } 
 };
 
@@ -117,6 +122,65 @@ chrome.storage.local.get('followContact', function (items) {
     }
 });
 
+// v5.1: post-extraction history filters (--since / --until parity).
+chrome.storage.local.get(['historySinceDate', 'historyUntilDate'], function (items) {
+    var s = String(items.historySinceDate || '');
+    var u = String(items.historyUntilDate || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) serpdigger.runner.current.historySince = s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(u)) serpdigger.runner.current.historyUntil = u;
+});
+
+// v5.1: rich-record helpers. emailsFound is now an Array of
+// {email, name?, confidence?} objects (was: string[]). Backwards-compatible:
+// any string pushed by legacy paths is normalised here.
+function _toEmailRecord(emailOrObj) {
+    if (typeof emailOrObj === 'string') return { email: emailOrObj };
+    if (emailOrObj && typeof emailOrObj === 'object' && emailOrObj.email) {
+        var rec = { email: String(emailOrObj.email) };
+        if (emailOrObj.name)       rec.name       = String(emailOrObj.name);
+        if (typeof emailOrObj.confidence === 'number') rec.confidence = emailOrObj.confidence;
+        return rec;
+    }
+    return null;
+}
+function _emailKey(rec) {
+    if (!rec) return '';
+    var e = (typeof rec === 'string') ? rec : (rec.email || '');
+    return String(e).toLowerCase();
+}
+function _emailsFoundContains(arr, email) {
+    var key = _emailKey(email);
+    for (var i = 0; i < arr.length; i++) {
+        if (_emailKey(arr[i]) === key) return true;
+    }
+    return false;
+}
+function _emailsFoundAsStrings(arr) {
+    return (arr || []).map(function (r) {
+        return (typeof r === 'string') ? r : (r && r.email) || '';
+    }).filter(function (s) { return !!s; });
+}
+
+// v5.1: --since / --until post-filter against the persistent seen-history
+// firstSeen day. Returns true when the email should be DROPPED. Empty bounds
+// ⇒ never drop (no-op). Mirrors cli/paris.js#isInHistory semantics but
+// inverted: there it returns "skip" only when in window AND seen; here we
+// likewise drop only when seen AND OUT of window — i.e., we keep new finds.
+function _shouldDropByHistoryWindow(email) {
+    var since = serpdigger.runner.current.historySince;
+    var until = serpdigger.runner.current.historyUntil;
+    if (!since && !until) return false;
+    var seen = serpdigger.runner.current.seenEmails;
+    if (!seen) return false;
+    var rec = seen[String(email).toLowerCase()];
+    if (!rec) return false; // brand-new email — never filtered by date window
+    var firstDay = String(rec.firstSeen || '').slice(0, 10);
+    if (!firstDay) return false;
+    if (since && firstDay < since) return true;
+    if (until && firstDay > until) return true;
+    return false;
+}
+
 // ── Deep-scan concurrency ──────────────────────────────────────────────────
 // Controls how many _deepFetchPage requests may be in-flight simultaneously.
 // Default: 6 (a reasonable balance between throughput and being polite to
@@ -196,12 +260,18 @@ chrome.runtime.onMessage.addListener(
     function (request, sender) {
         log.i('runtime.onMessage', request.eventName, sender);
         if(request.eventName === 'runner:update') {
-            request.eventData.emails.forEach(function (email) {
-                if(!serpdigger.runner.current.removeDuplicates || serpdigger.runner.current.emailsFound.indexOf(email) === -1) {
-                    serpdigger.runner.current.emailsFound.push(email);
+            // v5.1: emails may arrive as {email, name?, confidence?} records
+            // OR as legacy plain strings (older content scripts). Normalise.
+            (request.eventData.emails || []).forEach(function (item) {
+                var rec = _toEmailRecord(item);
+                if (!rec) return;
+                if (_shouldDropByHistoryWindow(rec.email)) return;
+                if (!serpdigger.runner.current.removeDuplicates ||
+                    !_emailsFoundContains(serpdigger.runner.current.emailsFound, rec.email)) {
+                    serpdigger.runner.current.emailsFound.push(rec);
                 }
             });
-            
+
             _notifyPopup('popup:emailCount', {count: serpdigger.runner.current.emailsFound.length});
         } else if (request.eventName === 'runner:finish') {
             serpdigger.runner.current.pagesForCurrentQuery = 0;
@@ -435,15 +505,19 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         };
         var extracted = EmailExtractor.extractEmails(combinedText, extractorOpts);
 
-        // ── v4.7: structural extractors ──────────────────────────────────
+        // ── v4.7+ (extended in v5.1): structural extractors ──────────────
         // Run the five HTML-aware passes (Cloudflare cfemail, CSS pseudo-
         // elements, RTL-reversed text, fragment reconstruction, <script>
-        // bodies) on the ORIGINAL HTML and merge the results. These surface
-        // emails the regex-on-stripped-text path cannot see, especially on
-        // small-business sites that proxy through Cloudflare.
-        if (typeof EmailExtractor.extractFromHtml === 'function') {
+        // bodies) on the ORIGINAL HTML and merge the results. v5.1: when the
+        // extractor exposes extractEmailsWithContext we prefer it so each
+        // record gets a `name` field (heading-proximity heuristic), enabling
+        // the popup CSV download path to emit "email,name" columns.
+        var structuralFn = (typeof EmailExtractor.extractEmailsWithContext === 'function')
+            ? EmailExtractor.extractEmailsWithContext
+            : (typeof EmailExtractor.extractFromHtml === 'function' ? EmailExtractor.extractFromHtml : null);
+        if (structuralFn) {
             try {
-                var structural = EmailExtractor.extractFromHtml(html, extractorOpts);
+                var structural = structuralFn(html, extractorOpts);
                 var seenForMerge = {};
                 for (var ei = 0; ei < extracted.length; ei++) {
                     seenForMerge[extracted[ei].email] = ei;
@@ -454,10 +528,14 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
                     if (existing === undefined) {
                         extracted.push(sr);
                         seenForMerge[sr.email] = extracted.length - 1;
-                    } else if (sr.confidence > extracted[existing].confidence) {
-                        // Prefer the higher-confidence record (e.g. Cloudflare
-                        // gets +5 and beats a duplicate "lenient" hit).
-                        extracted[existing] = sr;
+                    } else {
+                        // Merge: prefer higher confidence, but always carry
+                        // any name field the structural pass attached.
+                        if (sr.confidence > extracted[existing].confidence) {
+                            extracted[existing] = sr;
+                        } else if (sr.name && !extracted[existing].name) {
+                            extracted[existing].name = sr.name;
+                        }
                     }
                 }
             } catch (eStr) {
@@ -496,22 +574,46 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         }
 
         var filtered = EmailExtractor.filterEmails(extracted, filterOpts);
-        var unique = EmailExtractor.getUniqueEmails(filtered);
+
+        // v5.1: Build a rich-record map keyed by lowercased email, preserving
+        // the highest-confidence and any associated name. This replaces the
+        // string[]-based getUniqueEmails so we can carry name through to the
+        // popup download path.
+        var richMap = {};
+        filtered.forEach(function (e) {
+            if (!e || !e.email) return;
+            var key = String(e.email).toLowerCase();
+            var existing = richMap[key];
+            if (!existing || (typeof e.confidence === 'number' && e.confidence > (existing.confidence || 0))) {
+                richMap[key] = {
+                    email: e.email,
+                    name: e.name || (existing && existing.name) || '',
+                    confidence: typeof e.confidence === 'number' ? e.confidence : (existing && existing.confidence) || 0
+                };
+            } else if (existing && !existing.name && e.name) {
+                existing.name = e.name;
+            }
+        });
+        var unique = Object.keys(richMap).map(function (k) { return richMap[k]; });
 
         var addedNew = false;
-        unique.forEach(function(email) {
+        unique.forEach(function(rec) {
             // Persistent skip-seen: drop emails already known from a prior
             // run when the popup checkbox is enabled. Within-run dedup is
             // still done via the emailsFound check below.
             if (serpdigger.runner.current.skipSeen) {
-                var key = String(email).toLowerCase();
+                var key = String(rec.email).toLowerCase();
                 if (serpdigger.runner.current.seenEmails &&
                     serpdigger.runner.current.seenEmails.hasOwnProperty(key)) {
                     return;
                 }
             }
-            if (!removeDuplicates || serpdigger.runner.current.emailsFound.indexOf(email) === -1) {
-                serpdigger.runner.current.emailsFound.push(email);
+            // v5.1: post-extraction --since/--until filter against history.
+            if (_shouldDropByHistoryWindow(rec.email)) return;
+
+            if (!removeDuplicates ||
+                !_emailsFoundContains(serpdigger.runner.current.emailsFound, rec.email)) {
+                serpdigger.runner.current.emailsFound.push(rec);
                 addedNew = true;
             }
         });
@@ -608,7 +710,9 @@ function _onRunnerFinish() {
         chrome.storage.local.get(['seenEmails'], function (items) {
             var store = (items.seenEmails && typeof items.seenEmails === 'object') ? items.seenEmails : {};
             var nowIso = new Date().toISOString();
-            found.forEach(function (email) {
+            found.forEach(function (rec) {
+                var email = (typeof rec === 'string') ? rec : (rec && rec.email) || '';
+                if (!email) return;
                 var key = String(email).toLowerCase();
                 if (store[key]) {
                     store[key].lastSeen = nowIso;
@@ -619,6 +723,11 @@ function _onRunnerFinish() {
             chrome.storage.local.set({ seenEmails: store });
         });
     }
+
+    // v5.1: persist a run-history entry (timestamp, footprint, count, top
+    // domains) for the popup's "Run history" panel. Most-recent-first, capped
+    // at 50 entries to keep chrome.storage.local from ballooning.
+    _recordRunHistory(found);
 
     // Auto-MX validate when enabled and we have results
     if (serpdigger.runner.current.mxValidation
@@ -672,12 +781,21 @@ serpdigger.run = function (queries) {
     });
     _notifyPopup('popup:started', {state: _getRunnerState()});
 
-    chrome.storage.local.get(['skipSeenEmails', 'seenEmails'], function (items) {
+    chrome.storage.local.get(['skipSeenEmails', 'seenEmails', 'historySinceDate', 'historyUntilDate'], function (items) {
         serpdigger.runner.current.skipSeen = !!items.skipSeenEmails;
-        if (serpdigger.runner.current.skipSeen && items.seenEmails && typeof items.seenEmails === 'object') {
+        if (items.seenEmails && typeof items.seenEmails === 'object') {
+            // v5.1: always load seenEmails into runner.current.seenEmails so
+            // the --since/--until window filter (which checks firstSeen) can
+            // operate even when "Skip seen" is OFF. The skip itself is still
+            // gated on serpdigger.runner.current.skipSeen.
             serpdigger.runner.current.seenEmails = items.seenEmails;
-            log.i('skip-seen ON, history loaded with ' + Object.keys(items.seenEmails).length + ' email(s)');
+            log.i('seen-history loaded with ' + Object.keys(items.seenEmails).length + ' email(s); skipSeen=' + serpdigger.runner.current.skipSeen);
         }
+        // v5.1: refresh --since/--until from storage at run start.
+        var s = String(items.historySinceDate || '');
+        var u = String(items.historyUntilDate || '');
+        serpdigger.runner.current.historySince = /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+        serpdigger.runner.current.historyUntil = /^\d{4}-\d{2}-\d{2}$/.test(u) ? u : '';
         chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
             if (!tabs || !tabs[0]) {
                 log.e('No active tab found');
@@ -741,7 +859,12 @@ function _checkMxRecord(domain) {
 }
 
 serpdigger.validateEmails = function (callback) {
-    var emails = serpdigger.runner.current.emailsFound;
+    // v5.1: emailsFound is now {email,name?,confidence?}[]; normalise to
+    // strings for the DNS-based MX validation flow (which only cares about
+    // the domain). The download path still has the rich records to emit
+    // CSVs with names.
+    var rawFound = serpdigger.runner.current.emailsFound || [];
+    var emails = _emailsFoundAsStrings(rawFound);
     if (!emails || emails.length === 0) {
         callback({ valid: [], invalid: [], total: 0, validCount: 0, invalidCount: 0 });
         return;
@@ -827,6 +950,38 @@ serpdigger.download = function (filterMode) {
         emails = serpdigger.runner.current.emailsFound;
     }
 
+    // v5.1: emails may now be a mix of {email,name,confidence} records and
+    // legacy plain strings (the MX-validation arrays still hold strings).
+    // When ANY record carries a non-empty name we switch the download to a
+    // CSV (header: email,name,confidence) so the lead-export workflow has
+    // the contact's display name. Otherwise we emit the legacy txt format.
+    var records = (emails || []).map(function (e) {
+        if (typeof e === 'string') return { email: e };
+        if (e && typeof e === 'object' && e.email) return e;
+        return null;
+    }).filter(Boolean);
+
+    var hasName = records.some(function (r) { return r && r.name; });
+    var ext = hasName ? '.csv' : '.txt';
+    var mime = hasName ? 'text/csv' : 'text/plain';
+    var body;
+    if (hasName) {
+        var safe = function (v) {
+            return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+        };
+        var lines = ['email,name,confidence'];
+        records.forEach(function (r) {
+            lines.push([
+                safe(r.email),
+                safe(r.name || ''),
+                safe(typeof r.confidence === 'number' ? r.confidence : '')
+            ].join(','));
+        });
+        body = lines.join('\r\n');
+    } else {
+        body = records.map(function (r) { return r.email; }).join('\r\n');
+    }
+
     // v5.0: footprint-name in filename (CLI v4.5 parity). When the runner
     // started with a non-empty footprint label, build paris-<label>-<ts>.txt;
     // otherwise fall back to the legacy paris-email-extractor_<date>_<time>.txt
@@ -839,12 +994,60 @@ serpdigger.download = function (filterMode) {
         .replace(/-{2,}/g, '-')
         .slice(0, 32);
     var filename = safeLabel
-        ? 'paris-' + safeLabel + '_' + dateString + '_' + timeString + suffix + '.txt'
-        : 'paris-email-extractor_' + dateString + '_' + timeString + suffix + '.txt';
+        ? 'paris-' + safeLabel + '_' + dateString + '_' + timeString + suffix + ext
+        : 'paris-email-extractor_' + dateString + '_' + timeString + suffix + ext;
+
+    // Use a Blob URL for CSV (preserves UTF-8 names) and the legacy
+    // base64 data URL for plain txt to keep existing behaviour.
+    var url;
+    if (hasName) {
+        try {
+            var blob = new Blob([body], { type: mime + ';charset=utf-8' });
+            url = URL.createObjectURL(blob);
+        } catch (e) {
+            // Service-worker without Blob? Fall back to data: URL.
+            url = 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(body);
+        }
+    } else {
+        url = 'data:text/plain;base64,' + btoa(body);
+    }
 
     chrome.downloads.download({
-        url: 'data:text/plain;base64,' + btoa(emails.join("\r\n")),
+        url: url,
         filename: filename,
         saveAs: true
     });
 };
+
+// v5.1: persist a compact run-history record so the popup can show prior
+// runs in its History tab. Cap at 50 most-recent entries.
+function _recordRunHistory(found) {
+    try {
+        var rec = {
+            ts: new Date().toISOString(),
+            footprint: serpdigger.runner.current.footprintLabel || '',
+            count: (found || []).length,
+            topDomains: []
+        };
+        // Compute top-3 domains for the entry.
+        var counts = {};
+        (found || []).forEach(function (e) {
+            var email = (typeof e === 'string') ? e : (e && e.email) || '';
+            var d = email.split('@')[1];
+            if (!d) return;
+            counts[d] = (counts[d] || 0) + 1;
+        });
+        rec.topDomains = Object.keys(counts)
+            .sort(function (a, b) { return counts[b] - counts[a]; })
+            .slice(0, 3);
+
+        chrome.storage.local.get('runHistory', function (items) {
+            var hist = Array.isArray(items.runHistory) ? items.runHistory.slice() : [];
+            hist.unshift(rec);
+            if (hist.length > 50) hist = hist.slice(0, 50);
+            chrome.storage.local.set({ runHistory: hist });
+        });
+    } catch (e) {
+        log.w('_recordRunHistory failed', e && e.message || e);
+    }
+}

@@ -2,6 +2,62 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [5.1.0] - 2026-05-03
+
+### 🌐 Browser-extension parity, round 4 — strict / date / live-DOM / name CSV / unlimited
+
+Closes every remaining "Section 1a" gap, ships the rest of "Section 1b" (live-DOM extraction), and lifts the historical caps on extraction depth so deep-scan can run "unlimited".
+
+#### `--strict` checkbox (CLI parity, trivial)
+- `popup/popup.html` — new `#strictCheckbox` directly under `#minConfidenceInput`. When ticked, snaps Min confidence to **30** and disables the numeric input; unchecking restores the previous manual value (persisted in `chrome.storage.local._preStrictMinConfidence`). Mirrors `cli/paris.js`'s `--strict`.
+- `popup/query.js` — `storeStrict` / `restoreStrict` / `applyStrictMode(on, persistMinConf)` helpers; `applyStrictMode` is invoked both at restore (UI sync only, no storage write) and on click (full storage + `state:setMinConfidence` push so an in-flight run picks the change up immediately).
+
+#### `after:` / `before:` query operators (CLI `--after` / `--before` parity)
+- `popup/popup.html` — new `#afterDateInput` / `#beforeDateInput` (`<input type="date">`) inside the existing left settings column.
+- `popup/query.js` — `storeAfterDate` / `storeBeforeDate` (with strict ISO-day validation) wired to the inputs. `getQueries()` injects `after:YYYY-MM-DD` / `before:YYYY-MM-DD` operators **after** country-TLD and industry prepending so the resulting query reads naturally and matches the ordering in `cli/paris.js#applyDateRangeToQuery`.
+- Both empty ⇒ no operator emitted (zero behavioural change for existing users).
+
+#### `--since` / `--until` post-extraction history filter (CLI parity)
+- `popup/popup.html` — new `#sinceDateInput` / `#untilDateInput`. Compared against the persistent seen-history's `firstSeen` day per email.
+- `popup/query.js` — `storeSinceDate` / `storeUntilDate` plus runtime `state:setHistorySince` / `state:setHistoryUntil` events.
+- `background/communication.js` — new listeners that validate `YYYY-MM-DD` and update `serpdigger.runner.current.historySince/Until` mid-run.
+- `background/runner.js` — `_shouldDropByHistoryWindow(email)` is consulted in **both** the SERP `runner:update` path AND the deep-fetch path. Drops only when the email is already in seen-history AND its `firstSeen` day is OUT of the `[since, until]` window (brand-new emails are never date-filtered). `seenEmails` is now always loaded at run start (regardless of `skipSeen`) so the date filter has data to compare against.
+
+#### Name-association in CSV download (CLI v4.6 parity, schema migration)
+- **Schema change**: `serpdigger.runner.current.emailsFound` is now an `Array<{email, name?, confidence?}>` (was `string[]`). All call sites updated:
+  - `background/runner.js` — new helpers `_toEmailRecord(item)`, `_emailKey(rec)`, `_emailsFoundContains(arr, email)`, `_emailsFoundAsStrings(arr)` normalize legacy strings on the fly. `runner:update` listener, deep-fetch push, MX validation (`serpdigger.validateEmails` extracts strings for DNS lookups but the rich array is preserved for the download path), and seen-history persistence (`_onRunnerFinish`) all read records via the helpers.
+  - `content/duckduckgo.js` — new `Runner.prototype._collectRecords(records)` collector that preserves `name`/`confidence`. The CSE and generic SERP branches now prefer `EmailExtractor.extractEmailsWithContext(rawHtml, opts)` (which attaches a `name` via heading-proximity heuristic), falling back to `extractFromHtml` then plain text-regex. The legacy string-based `_collectEmails` path is preserved for the regex-fallback branch.
+  - `background/runner.js` deep-fetch — also prefers `extractEmailsWithContext` when available; merges structural results into a rich `{email, name, confidence}` map keyed by lowercased email (highest-confidence wins; missing names are filled in from later passes).
+- `serpdigger.download(filterMode)` now switches to **CSV format** (`email,name,confidence` header, double-quoted, RFC-4180 escaping) and a `.csv` extension whenever **any** record carries a non-empty name; otherwise emits the legacy `.txt` of email lines. CSV uses a `Blob`/`URL.createObjectURL` flow for proper UTF-8; the legacy txt path keeps the existing base64 data URL.
+
+#### Live-DOM extraction (Section 1b power feature)
+- `content/duckduckgo.js` — new `_collectLiveDomExtras(root)` is called alongside `_collectOuterHtmlWithShadows` on every SERP container:
+  - **`getComputedStyle(el, '::before').content` / `::after`** reader: walks every element under `root`, reads the runtime pseudo-element `content` value, unquotes surrounding `'…'`/`"…"`, decodes CSS hex escapes (`\\hh`), and appends any string containing `@` to the rawHtml fed into the extractor. Catches emails delivered via CSS pseudo-element `content:` declarations whose runtime values differ from the static stylesheet rules the existing `extractFromHtml` CSS pass already scrapes.
+  - **Same-origin iframe walker**: `iframe.contentDocument.body.outerHTML` for every accessible frame (one level of nested iframes too). Cross-origin frames throw on `contentDocument` access and are silently skipped — guaranteed safe per the same-origin policy.
+  - 20,000-element visit cap protects against pathological pages.
+
+#### Run-history tab (popup UX)
+- `popup/popup.html` — new collapsible **Run history** panel (timestamp, footprint, email count, top-3 result domains) positioned between MX results and the bottom settings row. Click the heading to expand/collapse; "Clear history" wipes the list.
+- `background/runner.js` — new `_recordRunHistory(found)` invoked at the tail of `_onRunnerFinish`. Prepends a compact record `{ts, footprint, count, topDomains[]}` to `chrome.storage.local.runHistory`, capped at 50 most-recent entries.
+- `popup/query.js` — `refreshRunHistory()` renders the table; auto-refreshes when `popup:complete` arrives so the user sees their just-finished run immediately.
+
+#### Unlimited extraction (caps lifted)
+- `content/duckduckgo.js` — `Pages per query (1-100)` becomes `Pages per query (0 = unlimited)`; the page-pagination loop now treats any non-positive `maxPages` as **infinite** (continues until the search engine itself stops returning a "next" link). Removed the historical `resultUrls.slice(0, 30)` cap on deep-scan fan-out — the result list is now bounded only by what the SERP page renders, while the queue itself remains throttled by `deepScanConcurrency` (default 6, `0 = unlimited`).
+- `_collectOuterHtmlWithShadows` descent cap: 5,000 → 50,000 nodes.
+- `popup/popup.html` — `#maxPagesInput` `min` lowered to `0`, `max` raised to `9999`.
+- `popup/query.js` `#maxPagesInput` handler accepts 0 (= unlimited) and clamps only at the new 9999 ceiling.
+
+#### Defaults preserve current behaviour
+| Setting | Default | Storage key |
+|---|---|---|
+| Strict mode | OFF | `strictMode` |
+| After date | empty (no operator) | `queryAfterDate` |
+| Before date | empty (no operator) | `queryBeforeDate` |
+| Since date | empty (no filter) | `historySinceDate` |
+| Until date | empty (no filter) | `historyUntilDate` |
+| Pages per query | 10 (changed from "1–100" to "0 = unlimited") | `maxPagesPerQuery` |
+| Run-history cap | 50 entries | `runHistory` |
+
 ## [5.0.0] - 2026-05-03
 
 ### 🌐 Browser-extension parity, round 3 — industry, follow-contact, footprint-aware filename, shadow DOM

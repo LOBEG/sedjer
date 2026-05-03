@@ -101,6 +101,87 @@ function storeRfcStrict(val) {
     chrome.storage.local.set({ rfcStrict: !!val });
 }
 
+// v5.1: --strict shortcut (CLI parity) — when checked, snaps minConfidence to 30
+// and disables the input. We persist the user's last manual value so unchecking
+// restores it (rather than silently keeping 30).
+function storeStrict(val) {
+    chrome.storage.local.set({ strictMode: !!val });
+}
+function restoreStrict() {
+    chrome.storage.local.get('strictMode', function (items) {
+        if (!$('#strictCheckbox').length) return;
+        var on = !!items.strictMode;
+        $('#strictCheckbox').get(0).checked = on;
+        applyStrictMode(on, /*persistMinConf=*/false);
+    });
+}
+// Apply the strict toggle: when ON force min-confidence to 30 (and disable
+// the input); when OFF re-enable. If persistMinConf is true we ALSO write
+// the new minConfidence value through to storage and the SW so an in-flight
+// run picks it up immediately.
+function applyStrictMode(on, persistMinConf) {
+    var $input = $('#minConfidenceInput');
+    if (!$input.length) return;
+    if (on) {
+        if (persistMinConf) {
+            // Remember the previous manual value so unchecking restores it.
+            chrome.storage.local.set({ _preStrictMinConfidence: parseInt($input.val(), 10) || 0 });
+        }
+        $input.val(30).attr('disabled', true);
+        if (persistMinConf) {
+            storeMinConfidence(30);
+            _sendEvent('state:setMinConfidence', { value: 30 });
+        }
+    } else {
+        $input.attr('disabled', false);
+        if (persistMinConf) {
+            chrome.storage.local.get('_preStrictMinConfidence', function (it) {
+                var prev = (typeof it._preStrictMinConfidence === 'number' && isFinite(it._preStrictMinConfidence))
+                    ? it._preStrictMinConfidence : 30;
+                $input.val(prev);
+                storeMinConfidence(prev);
+                _sendEvent('state:setMinConfidence', { value: prev });
+            });
+        }
+    }
+}
+
+// v5.1: Search-engine date operators (after:/before:) and post-extraction
+// history filters (since/until). Stored as YYYY-MM-DD strings; empty ⇒ unset.
+function _storeISODate(key, val) {
+    var s = String(val || '').trim();
+    // Accept only YYYY-MM-DD; anything else clears the value.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) s = '';
+    var obj = {}; obj[key] = s;
+    chrome.storage.local.set(obj);
+}
+function _restoreISODate(key, sel) {
+    var o = {}; o[key] = '';
+    chrome.storage.local.get(key, function (items) {
+        var v = String(items[key] || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) v = '';
+        if ($(sel).length) $(sel).val(v);
+    });
+}
+function storeAfterDate(val)  { _storeISODate('queryAfterDate',  val); }
+function storeBeforeDate(val) { _storeISODate('queryBeforeDate', val); }
+function storeSinceDate(val)  { _storeISODate('historySinceDate', val); }
+function storeUntilDate(val)  { _storeISODate('historyUntilDate', val); }
+function restoreAfterDate()  { _restoreISODate('queryAfterDate',  '#afterDateInput'); }
+function restoreBeforeDate() { _restoreISODate('queryBeforeDate', '#beforeDateInput'); }
+function restoreSinceDate()  {
+    _restoreISODate('historySinceDate', '#sinceDateInput');
+    chrome.storage.local.get('historySinceDate', function (items) {
+        _sendEvent('state:setHistorySince', { value: String(items.historySinceDate || '') });
+    });
+}
+function restoreUntilDate()  {
+    _restoreISODate('historyUntilDate', '#untilDateInput');
+    chrome.storage.local.get('historyUntilDate', function (items) {
+        _sendEvent('state:setHistoryUntil', { value: String(items.historyUntilDate || '') });
+    });
+}
+
 function restoreSkipSeenEmails() {
     chrome.storage.local.get('skipSeenEmails', function (items) {
         if ($('#skipSeenEmails').length) {
@@ -160,6 +241,47 @@ function refreshSeenHistoryCount() {
 function clearSeenHistory() {
     chrome.storage.local.set({ seenEmails: {} }, function () {
         refreshSeenHistoryCount();
+    });
+}
+
+// v5.1: render the persistent run-history table from chrome.storage.local.runHistory
+// (an array of { ts, footprint, count, topDomains[] } objects, most-recent first,
+// capped at 50 by background/runner.js#_recordRunHistory).
+function _escHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function _formatRunTimestamp(iso) {
+    if (!iso) return '';
+    try {
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return _escHtml(iso);
+        return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return _escHtml(iso); }
+}
+function refreshRunHistory() {
+    if (!$('#run-history-rows').length) return;
+    chrome.storage.local.get('runHistory', function (items) {
+        var hist = Array.isArray(items.runHistory) ? items.runHistory : [];
+        $('#run-history-count').text(hist.length ? '(' + hist.length + ' run' + (hist.length === 1 ? '' : 's') + ')' : '');
+        if (!hist.length) {
+            $('#run-history-rows').html('<tr><td colspan="4" class="text-muted text-center"><small>No runs yet.</small></td></tr>');
+            return;
+        }
+        var rows = hist.map(function (h) {
+            var topDomains = Array.isArray(h.topDomains) ? h.topDomains : [];
+            var domainsCell = topDomains.length
+                ? topDomains.map(function (d) { return _escHtml(d); }).join(', ')
+                : '<span class="text-muted">—</span>';
+            return '<tr>' +
+                   '<td><small>' + _formatRunTimestamp(h.ts) + '</small></td>' +
+                   '<td><small>' + _escHtml(h.footprint || '<unnamed>') + '</small></td>' +
+                   '<td class="text-right"><strong>' + (parseInt(h.count, 10) || 0) + '</strong></td>' +
+                   '<td><small>' + domainsCell + '</small></td>' +
+                   '</tr>';
+        });
+        $('#run-history-rows').html(rows.join(''));
     });
 }
 
@@ -581,6 +703,23 @@ function getQueries() {
         });
     }
 
+    // v5.1: industry filter applied — now also inject Google date operators
+    // (after:/before:) per CLI --after/--before. Empty ⇒ no operator. Mirrors
+    // applyDateRangeToQuery() in cli/paris.js.
+    var afterDay  = String($('#afterDateInput').length  ? ($('#afterDateInput').val()  || '') : '').trim();
+    var beforeDay = String($('#beforeDateInput').length ? ($('#beforeDateInput').val() || '') : '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(afterDay))  afterDay  = '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(beforeDay)) beforeDay = '';
+    if (afterDay || beforeDay) {
+        var ops = [];
+        if (afterDay)  ops.push('after:'  + afterDay);
+        if (beforeDay) ops.push('before:' + beforeDay);
+        var opsStr = ops.join(' ');
+        footprintLines = footprintLines.map(function (line) {
+            return opsStr + ' ' + line;
+        });
+    }
+
     var queries = buildQueries(
         footprintLines,
 
@@ -737,6 +876,37 @@ _onInit(function () {
             _sendEvent('state:setRfcStrict', {value: this.checked});
         });
     }
+    // v5.1: --strict shortcut.
+    if ($('#strictCheckbox').length) {
+        $('#strictCheckbox').on('click', function () {
+            storeStrict(this.checked);
+            applyStrictMode(this.checked, /*persistMinConf=*/true);
+        });
+    }
+    // v5.1: SERP-side date operators (--after / --before parity).
+    if ($('#afterDateInput').length) {
+        $('#afterDateInput').on('change input', function () {
+            storeAfterDate($(this).val());
+        });
+    }
+    if ($('#beforeDateInput').length) {
+        $('#beforeDateInput').on('change input', function () {
+            storeBeforeDate($(this).val());
+        });
+    }
+    // v5.1: post-extraction history filters (--since / --until parity).
+    if ($('#sinceDateInput').length) {
+        $('#sinceDateInput').on('change input', function () {
+            storeSinceDate($(this).val());
+            _sendEvent('state:setHistorySince', { value: String($(this).val() || '') });
+        });
+    }
+    if ($('#untilDateInput').length) {
+        $('#untilDateInput').on('change input', function () {
+            storeUntilDate($(this).val());
+            _sendEvent('state:setHistoryUntil', { value: String($(this).val() || '') });
+        });
+    }
     // v5.0: industry + follow-contact bindings.
     if ($('#industry-select').length) {
         $('#industry-select').on('change', function () {
@@ -751,9 +921,16 @@ _onInit(function () {
     }
 
     $('#maxPagesInput').on('input change keyup', function () {
-        var val = parseInt($(this).val(), 10);
-        if (!val || val < 1) val = 1;
-        if (val > 100) val = 100;
+        var raw = $(this).val();
+        var val;
+        if (raw === '' || raw === null || raw === undefined) {
+            val = 10;
+        } else {
+            val = parseInt(raw, 10);
+            if (!isFinite(val) || val < 0) val = 0;
+            // v5.1: cap removed for "unlimited" extraction (0 ⇒ unlimited).
+            if (val > 9999) val = 9999;
+        }
         storeMaxPages(val);
         _sendEvent('state:setMaxPages', {value: val});
     });
@@ -786,6 +963,35 @@ _onInit(function () {
     $('#term2-exact-match-checkbox').on('click', function () {
         storeTerm2ExactMatch(this.checked);
     });
+
+    // v5.1: Run-history toggle / clear bindings.
+    if ($('#run-history-toggle').length) {
+        $('#run-history-toggle').on('click', function (ev) {
+            // Ignore clicks on the inner Clear button; that has its own handler.
+            if ($(ev.target).closest('#run-history-clear').length) return;
+            var $body = $('#run-history-body');
+            var visible = $body.is(':visible');
+            $body.toggle();
+            $('#run-history-caret').text(visible ? '▾' : '▴');
+            if (!visible) refreshRunHistory();
+        });
+    }
+    if ($('#run-history-clear').length) {
+        $('#run-history-clear').on('click', function (ev) {
+            ev.stopPropagation();
+            if (typeof confirm === 'function' && !confirm('Clear the run-history list?')) return;
+            chrome.storage.local.set({ runHistory: [] }, function () {
+                refreshRunHistory();
+            });
+        });
+    }
+    // Listen for runner-finish notifications so the history table stays fresh
+    // without the user having to reopen the panel.
+    chrome.runtime.onMessage.addListener(function (request) {
+        if (request && request.eventName === 'popup:complete') {
+            refreshRunHistory();
+        }
+    });
     
     restorePatternsFromStorage();
     restoreFootprintsFromStorage();
@@ -810,7 +1016,13 @@ _onInit(function () {
     restoreRfcStrict();
     restoreIndustry();
     restoreFollowContact();
+    restoreStrict();
+    restoreAfterDate();
+    restoreBeforeDate();
+    restoreSinceDate();
+    restoreUntilDate();
     refreshSeenHistoryCount();
+    refreshRunHistory();
     
     log.i('after query : ', $('#delayInput').val());
     

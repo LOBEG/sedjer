@@ -342,6 +342,39 @@
                     </div>
                 </div>
             </div>
+            <!-- v5.1: Run history tab — shows past extraction runs with timestamp, footprint
+                 label, email count, and top result domains. Persisted in
+                 chrome.storage.local.runHistory (most-recent-first, capped at 50 entries
+                 by the runner). Click "Clear history" to wipe. -->
+            <div class="row" style="padding-bottom: 10px;">
+                <div class="col-sm-12">
+                    <div class="panel panel-default" id="run-history-panel">
+                        <div class="panel-heading" style="cursor: pointer;" id="run-history-toggle">
+                            <strong>Run history</strong>
+                            <small class="text-muted" id="run-history-count" style="margin-left: 8px;"></small>
+                            <span class="pull-right">
+                                <button type="button" class="btn btn-default btn-xs" id="run-history-clear">Clear history</button>
+                                <span id="run-history-caret" style="margin-left: 6px;">▾</span>
+                            </span>
+                        </div>
+                        <div class="panel-body" id="run-history-body" style="display: none; padding: 6px 12px;">
+                            <table class="table table-condensed table-hover" style="margin-bottom: 0;">
+                                <thead>
+                                    <tr>
+                                        <th>When</th>
+                                        <th>Footprint</th>
+                                        <th class="text-right">Emails</th>
+                                        <th>Top domains</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="run-history-rows">
+                                    <tr><td colspan="4" class="text-muted text-center"><small>No runs yet.</small></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <div class="row" style="padding-bottom: 10px;">
                 <div class="container-fluid">
                     <div class="row">
@@ -352,10 +385,44 @@
                                     <input type="number" min="0" max="99" class="form-control" id="delayInput">
                                 </div>
                             </div>
-                            <div class="form-group" style="margin-top: 10px;">
-                                <label for="maxPagesInput" style="padding-top: 5px;" class="col-sm-8 control-label">Pages per query (1-100)</label>
+                            <div class="form-group" style="margin-top: 10px;"
+                                 title="Maximum number of SERP pages to scan per query. Set to 0 for UNLIMITED (no cap — scan until the search engine returns no more pages).">
+                                <label for="maxPagesInput" style="padding-top: 5px;" class="col-sm-8 control-label">Pages per query (0 = unlimited)</label>
                                 <div class="col-sm-4">
-                                    <input type="number" min="1" max="100" class="form-control" id="maxPagesInput" value="10">
+                                    <input type="number" min="0" max="9999" class="form-control" id="maxPagesInput" value="10">
+                                </div>
+                            </div>
+                            <!-- v5.1: Search-engine date operators (parity with CLI --after / --before).
+                                 Both empty ⇒ no operator injected. Format YYYY-MM-DD. -->
+                            <div class="form-group" style="margin-top: 6px;"
+                                 title="Inject `after:YYYY-MM-DD` operator into every SERP query — only crawl pages indexed/published on or after this date. Mirrors CLI --after.">
+                                <label for="afterDateInput" style="padding-top: 5px;" class="col-sm-8 control-label">After date (Google after:)</label>
+                                <div class="col-sm-4">
+                                    <input type="date" class="form-control input-sm" id="afterDateInput">
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top: 6px;"
+                                 title="Inject `before:YYYY-MM-DD` operator into every SERP query. Mirrors CLI --before.">
+                                <label for="beforeDateInput" style="padding-top: 5px;" class="col-sm-8 control-label">Before date (Google before:)</label>
+                                <div class="col-sm-4">
+                                    <input type="date" class="form-control input-sm" id="beforeDateInput">
+                                </div>
+                            </div>
+                            <!-- v5.1: post-extraction history filters (parity with CLI --since / --until).
+                                 Only re-emit emails whose firstSeen day in the persistent history falls in
+                                 the [since, until] window. Empty ⇒ no filter. -->
+                            <div class="form-group" style="margin-top: 6px;"
+                                 title="Only re-emit emails first seen on or after this day (in seen-history). Mirrors CLI --since.">
+                                <label for="sinceDateInput" style="padding-top: 5px;" class="col-sm-8 control-label">Since (history --since)</label>
+                                <div class="col-sm-4">
+                                    <input type="date" class="form-control input-sm" id="sinceDateInput">
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top: 6px;"
+                                 title="Only re-emit emails first seen on or before this day. Mirrors CLI --until.">
+                                <label for="untilDateInput" style="padding-top: 5px;" class="col-sm-8 control-label">Until (history --until)</label>
+                                <div class="col-sm-4">
+                                    <input type="date" class="form-control input-sm" id="untilDateInput">
                                 </div>
                             </div>
                         </div>
@@ -419,6 +486,16 @@
                                     <small>Min confidence (0–100)</small>
                                 </label>
                                 <input type="number" min="0" max="100" step="5" class="form-control input-sm" id="minConfidenceInput" value="30">
+                            </div>
+                            <!-- v5.1: --strict shortcut (CLI parity). When checked, snaps Min confidence
+                                 to 30 and disables manual editing so a one-click "high-confidence only"
+                                 mode is available. Unchecking restores the previous numeric value. -->
+                            <div class="checkbox" style="margin-top: 4px; margin-bottom: -5px;"
+                                 title="Shortcut for high-confidence-only mode: forces Min confidence to 30 and disables the field. Mirrors CLI --strict.">
+                                <label>
+                                    <input type="checkbox" id="strictCheckbox">
+                                    <b>Strict mode (min-confidence ≥ 30)</b>
+                                </label>
                             </div>
                             <div style="margin-top: 4px;">
                                 <button type="button" class="btn btn-default btn-xs" id="clearSeenBtn"

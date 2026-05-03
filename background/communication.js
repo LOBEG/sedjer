@@ -112,6 +112,19 @@ _addListener("state:setFollowContact", function (data, sender, respond) {
     serpdigger.runner.current.followContact = !!(data && data.value);
     respond({ok: true});
 });
+// v5.1: --since / --until post-extraction filters (chrome.storage.local also
+// updated by the popup, but pushing through here lets in-flight runs pick
+// the change up immediately, mirroring state:setMxValidation et al).
+_addListener("state:setHistorySince", function (data, sender, respond) {
+    var v = String((data && data.value) || '');
+    serpdigger.runner.current.historySince = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+    respond({ok: true});
+});
+_addListener("state:setHistoryUntil", function (data, sender, respond) {
+    var v = String((data && data.value) || '');
+    serpdigger.runner.current.historyUntil = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+    respond({ok: true});
+});
 
 _addListener("state:validateEmails", function (data, sender, respond) {
     serpdigger.validateEmails(function(results) {

@@ -30,9 +30,10 @@ function _collectOuterHtmlWithShadows(root) {
         if (!anyShadow) return base;
         var stack = [root];
         var visited = 0;
-        // Safety cap: don't descend more than 5,000 nodes per container —
-        // protects against pathological pages.
-        while (stack.length && visited < 5000) {
+        // Safety cap raised for v5.1 "unlimited" extraction (was 5000).
+        // 50,000 covers very large SERP/landing pages while still avoiding
+        // pathological infinite descent.
+        while (stack.length && visited < 50000) {
             var el = stack.pop();
             visited++;
             if (!el) continue;
@@ -53,6 +54,84 @@ function _collectOuterHtmlWithShadows(root) {
         }
     } catch (e) { /* shadow traversal best-effort */ }
     return parts.length > 1 ? parts.join('\n') : base;
+}
+
+// v5.1: live-DOM augmentation. Reads runtime values from getComputedStyle
+// for ::before/::after pseudo-elements (where many sites stash contact
+// emails via CSS `content:` declarations) AND collects innerHTML from any
+// reachable same-origin iframes. Both are appended to the rawHtml so the
+// shared EmailExtractor pipeline picks them up via its existing structural
+// passes. All operations are wrapped in try/catch — same-origin checks
+// throw on cross-origin frames and we silently skip those.
+//
+// Returns a string of extra HTML/text fragments, separated by newlines.
+// On any error returns ''. Designed to be additive: callers concatenate
+// the result onto the existing outerHTML/shadow output.
+function _collectLiveDomExtras(root) {
+    if (!root || !root.querySelectorAll) return '';
+    var extras = [];
+    var visited = 0;
+    var MAX_VISITS = 20000;
+
+    // 1) Walk same-origin iframes. iframe.contentDocument throws or returns
+    // null on cross-origin per the same-origin policy; we catch and skip.
+    try {
+        var iframes = root.querySelectorAll('iframe');
+        for (var i = 0; i < iframes.length && visited < MAX_VISITS; i++) {
+            var ifr = iframes[i];
+            visited++;
+            try {
+                var doc = ifr.contentDocument;
+                if (doc && doc.body) {
+                    extras.push(doc.body.outerHTML || doc.body.innerHTML || '');
+                    // Recurse one level for nested iframes.
+                    var nested = doc.querySelectorAll ? doc.querySelectorAll('iframe') : [];
+                    for (var k = 0; k < nested.length && visited < MAX_VISITS; k++) {
+                        visited++;
+                        try {
+                            var ndoc = nested[k].contentDocument;
+                            if (ndoc && ndoc.body) {
+                                extras.push(ndoc.body.outerHTML || ndoc.body.innerHTML || '');
+                            }
+                        } catch (e) { /* cross-origin */ }
+                    }
+                }
+            } catch (e) { /* cross-origin iframe */ }
+        }
+    } catch (e) { /* querySelectorAll failed */ }
+
+    // 2) Read getComputedStyle(...).content for ::before / ::after on every
+    // element. The `content` value comes back as a quoted string ("...") or
+    // 'none' / 'normal'. We unquote and append the text — the EmailExtractor
+    // regex pass will pick out any emails. We cap visits to MAX_VISITS so
+    // pathological pages don't freeze the tab.
+    try {
+        if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+            var all = root.querySelectorAll('*');
+            var pseudos = ['::before', '::after'];
+            for (var n = 0; n < all.length && visited < MAX_VISITS; n++) {
+                var el = all[n];
+                visited++;
+                for (var p = 0; p < pseudos.length; p++) {
+                    var content;
+                    try { content = window.getComputedStyle(el, pseudos[p]).getPropertyValue('content'); }
+                    catch (e) { content = ''; }
+                    if (!content || content === 'none' || content === 'normal') continue;
+                    // Strip surrounding single/double quotes and unescape \xx
+                    // sequences as much as we reasonably can.
+                    var unq = content.replace(/^['"]|['"]$/g, '');
+                    // CSS escape: "\\hh" hex codes — turn back into characters.
+                    unq = unq.replace(/\\([0-9a-fA-F]{1,6})\s?/g, function (_, hex) {
+                        try { return String.fromCharCode(parseInt(hex, 16)); }
+                        catch (er) { return ''; }
+                    });
+                    if (unq.indexOf('@') > -1) extras.push(unq);
+                }
+            }
+        }
+    } catch (e) { /* getComputedStyle failed */ }
+
+    return extras.length ? ('\n<!--paris-live-dom-->\n' + extras.join('\n')) : '';
 }
 
 function Runner(options) {
@@ -104,9 +183,13 @@ Runner.prototype.start = function (originalCallback) {
             _runner._update();
 
             var pagesScanned = runner.options.pagesScanned || 1;
-            var maxPages = runner.options.maxPages || 10;
+            var maxPages = runner.options.maxPages;
+            // v5.1: 0 / unset / negative ⇒ UNLIMITED page count. Treat
+            // any positive integer as a hard cap; otherwise loop forever
+            // (until the SERP engine stops returning a "next" link below).
+            var unlimited = !(maxPages > 0);
 
-            if (pagesScanned < maxPages) {
+            if (unlimited || pagesScanned < maxPages) {
                 var $nextLink = null;
 
                 // Google Web Search: "Next" pagination link
@@ -257,6 +340,7 @@ Runner.prototype.extract = function () {
         // Google CSE: extract from full result text (not just snippet)
         $('.gsc-result').each(function () {
             var $this = $(this);
+            var elNode = this;
 
             // Use enhanced email extractor if available
             if (window.EmailExtractor) {
@@ -265,17 +349,23 @@ Runner.prototype.extract = function () {
                 // split-span fragments and <script> bodies on the SERP card
                 // itself are caught. Fall back to text-only extraction on
                 // older builds where extractFromHtml isn't exported.
-                var rawHtml = _collectOuterHtmlWithShadows(this);
+                // v5.1: append live-DOM extras (computed-style ::before /
+                // ::after content + same-origin iframe bodies) so emails
+                // injected at runtime are also picked up.
+                var rawHtml = _collectOuterHtmlWithShadows(elNode);
+                var liveExtras = _collectLiveDomExtras(elNode);
+                if (liveExtras) rawHtml = rawHtml + liveExtras;
                 var extractedEmails;
-                if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
+                if (typeof window.EmailExtractor.extractEmailsWithContext === 'function' && rawHtml) {
+                    extractedEmails = window.EmailExtractor.extractEmailsWithContext(rawHtml, extractorOpts);
+                } else if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
                     extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, extractorOpts);
                 } else {
                     extractedEmails = window.EmailExtractor.extractEmails($this.text(), extractorOpts);
                 }
                 // Apply confidence threshold and dedupe via the module
                 var filtered = window.EmailExtractor.filterEmails(extractedEmails, serpFilterOpts);
-                var emailStrings = window.EmailExtractor.getUniqueEmails(filtered);
-                _runner._collectEmails(emailStrings);
+                _runner._collectRecords(filtered);
             } else {
                 // Fallback to regex
                 var emails = ($this.text().match(EMAIL_REGEXP) || []);
@@ -303,20 +393,24 @@ Runner.prototype.extract = function () {
 
         $containers.each(function () {
             var $el = $(this);
+            var elNode = this;
 
             // Use enhanced email extractor if available
             if (window.EmailExtractor) {
                 // v4.7+: HTML-aware path — see the matching CSE branch above.
-                var rawHtml = _collectOuterHtmlWithShadows(this);
+                var rawHtml = _collectOuterHtmlWithShadows(elNode);
+                var liveExtras = _collectLiveDomExtras(elNode);
+                if (liveExtras) rawHtml = rawHtml + liveExtras;
                 var extractedEmails;
-                if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
+                if (typeof window.EmailExtractor.extractEmailsWithContext === 'function' && rawHtml) {
+                    extractedEmails = window.EmailExtractor.extractEmailsWithContext(rawHtml, extractorOpts);
+                } else if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
                     extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, extractorOpts);
                 } else {
                     extractedEmails = window.EmailExtractor.extractEmails($el.text(), extractorOpts);
                 }
                 var filtered = window.EmailExtractor.filterEmails(extractedEmails, serpFilterOpts);
-                var emailStrings = window.EmailExtractor.getUniqueEmails(filtered);
-                _runner._collectEmails(emailStrings);
+                _runner._collectRecords(filtered);
             } else {
                 // Fallback to regex
                 var emails = ($el.text().match(EMAIL_REGEXP) || []);
@@ -328,7 +422,10 @@ Runner.prototype.extract = function () {
                 if (href && resultUrls.indexOf(href) === -1) resultUrls.push(href);
             });
         });
-        resultUrls = resultUrls.slice(0, 30);
+        // v5.1: removed the historical .slice(0, 30) cap to enable "unlimited"
+        // deep-scan fan-out. resultUrls is bounded in practice by what the
+        // SERP page renders, and the deep-scan queue itself is throttled by
+        // serpdigger.runner.current.deepScanConcurrency.
     }
 
     // Send result URLs for deep scanning in background
@@ -342,6 +439,47 @@ Runner.prototype.extract = function () {
             }
         });
     }
+};
+
+// v5.1: rich-record collector. Accepts an array of {email, name?, confidence?}
+// objects from the EmailExtractor and dedupes by email. The legacy
+// _collectEmails path (string[]) is preserved below for the regex-fallback
+// branch that runs when EmailExtractor isn't available.
+Runner.prototype._collectRecords = function (records) {
+    if (!records || !records.length) return;
+    var pattern = (runner.options && runner.options.queryObject) ? runner.options.queryObject[1] : null;
+    var patternBare = pattern ? pattern.replace(/"/g, '') : null;
+
+    records.forEach(function (rec) {
+        if (!rec || !rec.email) return;
+        var email = String(rec.email).toLowerCase().replace(/\s{1,}/gi, '');
+        var keep = email;
+
+        // Pattern restriction (legacy behaviour from _collectEmails): when
+        // the user specified a domain pattern (e.g. "@acme.com"), only keep
+        // emails ending with it AND strip the local-part prefix to align
+        // with the legacy collected-emails shape.
+        if (patternBare) {
+            var split = email.split(patternBare);
+            if (split[0].search('@') > -1) return;
+            keep = split[0] + patternBare;
+        }
+
+        // Dedup by email key.
+        var dup = false;
+        for (var i = 0; i < runner.emails.length; i++) {
+            var ex = runner.emails[i];
+            var exKey = (typeof ex === 'string') ? ex : (ex.email || '');
+            if (exKey === keep) { dup = true; break; }
+        }
+        if (!runner.options.removeDuplicates || !dup) {
+            runner.emails.push({
+                email: keep,
+                name: rec.name || '',
+                confidence: typeof rec.confidence === 'number' ? rec.confidence : 0
+            });
+        }
+    });
 };
 
 Runner.prototype._collectEmails = function(emails) {
