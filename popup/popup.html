@@ -152,12 +152,22 @@
             <div class="row" id="cse-row">
                 <div class="col-sm-4">
                     <div class="form-group">
-                        <label for="cse-address-input" style="line-height: 32px;">Insert Your CSE Main Address</label>
+                        <label for="cse-cx-input" style="line-height: 32px;">CSE cx ID <small class="text-muted">(preferred)</small></label>
                     </div>
                 </div>
                 <div class="col-sm-8">
                     <div class="form-group">
-                        <input class="form-control" id="cse-address-input" placeholder="https://cse.google.com/">
+                        <input class="form-control" id="cse-cx-input" placeholder="e.g. 0123456789abcdef0:abcdefghijk">
+                    </div>
+                </div>
+                <div class="col-sm-4">
+                    <div class="form-group">
+                        <label for="cse-address-input" style="line-height: 32px;">CSE Main Address <small class="text-muted">(fallback)</small></label>
+                    </div>
+                </div>
+                <div class="col-sm-8">
+                    <div class="form-group">
+                        <input class="form-control" id="cse-address-input" placeholder="https://cse.google.com/cse?cx=...">
                     </div>
                 </div>
             </div>

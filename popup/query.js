@@ -25,6 +25,16 @@ function storeCSEAddress(str) {
     })
 }
 
+// v4.8: Programmable Search Engine cx ID — mirrors CLI's --cse <cx>.
+// When set, the background runner builds the SERP URL itself
+// (https://cse.google.com/cse?cx=<cx>&q=…) instead of using the legacy
+// "CSE Main Address" field. Empty cx falls back to the address field.
+function storeCSECx(str) {
+    chrome.storage.local.set({
+        cseCx: str
+    })
+}
+
 function storeSecondTerms(str) {
     chrome.storage.local.set({
         secondTerms: str
@@ -301,6 +311,12 @@ function restoreCSEAddressFromStorage() {
     });
 }
 
+function restoreCSECxFromStorage() {
+    chrome.storage.local.get('cseCx', function (items) {
+        $('#cse-cx-input').val(items.cseCx ? items.cseCx : '');
+    });
+}
+
 function restoreSecondTermsFromStorage() {
     chrome.storage.local.get('secondTerms', function (items) {
         $('#term2-input').val(items.secondTerms ? items.secondTerms : '');
@@ -488,6 +504,10 @@ _onInit(function () {
     $('#cse-address-input').on('change keyup', function () {
         storeCSEAddress($(this).val());
     });
+
+    $('#cse-cx-input').on('change keyup', function () {
+        storeCSECx($(this).val());
+    });
     
     $('#term2-input').on('change keyup', function () {
         storeSecondTerms($(this).val());
@@ -559,6 +579,7 @@ _onInit(function () {
     restoreFootprintsFromStorage();
     restoreLocationFromStorage();
     restoreCSEAddressFromStorage();
+    restoreCSECxFromStorage();
     restoreSecondTermsFromStorage();
     restoreDelay();
     restoreRemoveDuplicates();

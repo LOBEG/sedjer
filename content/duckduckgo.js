@@ -197,11 +197,21 @@ Runner.prototype.extract = function () {
         // Google CSE: extract from full result text (not just snippet)
         $('.gsc-result').each(function () {
             var $this = $(this);
-            var allText = $this.text();
-            
+
             // Use enhanced email extractor if available
             if (window.EmailExtractor) {
-                var extractedEmails = window.EmailExtractor.extractEmails(allText, platformInfo);
+                // v4.7+: prefer the HTML-aware pipeline so Cloudflare cfemail
+                // blobs, CSS ::before/::after content, RTL-reversed text,
+                // split-span fragments and <script> bodies on the SERP card
+                // itself are caught. Fall back to text-only extraction on
+                // older builds where extractFromHtml isn't exported.
+                var rawHtml = (this.outerHTML || '');
+                var extractedEmails;
+                if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
+                    extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, platformInfo);
+                } else {
+                    extractedEmails = window.EmailExtractor.extractEmails($this.text(), platformInfo);
+                }
                 // Apply confidence threshold and dedupe via the module
                 var filtered = window.EmailExtractor.filterEmails(extractedEmails, {
                     minConfidence: 30,
@@ -211,7 +221,7 @@ Runner.prototype.extract = function () {
                 _runner._collectEmails(emailStrings);
             } else {
                 // Fallback to regex
-                var emails = (allText.match(EMAIL_REGEXP) || []);
+                var emails = ($this.text().match(EMAIL_REGEXP) || []);
                 _runner._collectEmails(emails);
             }
 
@@ -236,11 +246,17 @@ Runner.prototype.extract = function () {
 
         $containers.each(function () {
             var $el = $(this);
-            var text = $el.text();
-            
+
             // Use enhanced email extractor if available
             if (window.EmailExtractor) {
-                var extractedEmails = window.EmailExtractor.extractEmails(text, platformInfo);
+                // v4.7+: HTML-aware path — see the matching CSE branch above.
+                var rawHtml = (this.outerHTML || '');
+                var extractedEmails;
+                if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
+                    extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, platformInfo);
+                } else {
+                    extractedEmails = window.EmailExtractor.extractEmails($el.text(), platformInfo);
+                }
                 var filtered = window.EmailExtractor.filterEmails(extractedEmails, {
                     minConfidence: 30,
                     excludeRoles: true
@@ -249,7 +265,7 @@ Runner.prototype.extract = function () {
                 _runner._collectEmails(emailStrings);
             } else {
                 // Fallback to regex
-                var emails = (text.match(EMAIL_REGEXP) || []);
+                var emails = ($el.text().match(EMAIL_REGEXP) || []);
                 _runner._collectEmails(emails);
             }
 

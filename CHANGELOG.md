@@ -2,6 +2,35 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.8.0] - 2026-05-03
+
+### 🌐 Browser-extension parity, round 1
+
+The CLI raced ahead through v4.5–v4.7 while the browser extension lagged behind on two fronts. v4.8 closes the most important gaps.
+
+#### Audit fix — DDG content-script wiring (v4.7 structural extractors)
+- **Before**: `content/duckduckgo.js` extracted SERP results via `$el.text()` + `EmailExtractor.extractEmails(text)`, which loses HTML structure. The five v4.7 structural extractors (Cloudflare cfemail, CSS pseudo-elements, RTL reversal, fragment reconstruction, `<script>` bodies) only ran in the service-worker deep-fetch path — never on the SERP page itself.
+- **Now**: when `window.EmailExtractor.extractFromHtml` is available, the content script passes `el.outerHTML` to it, so SERP cards get the same five-method structural pass as deep-fetched pages. Falls back to `.text()` + `extractEmails()` cleanly when an older `EmailExtractor` build is loaded. Both the CSE branch (`.gsc-result`) and the Google/Bing/generic branch (`#search .g`, `#b_results .b_algo`, `body`) are updated.
+
+#### CSE Programmable Search Engine path — `cx` ID input
+- **CLI** (since v4.6) accepts a CSE `cx` ID via `--cse <cx>`, `PARIS_CSE_CX`, or `INTERACTIVE_SETTINGS.cseCx`, then builds `https://cse.google.com/cse?cx=<cx>&q=<query>&ia=web&start=…` itself.
+- **Extension** previously only had a single `#cse-address-input` field that demanded the full pre-built CSE URL (e.g. `https://cse.google.com/cse?cx=ABC...`). Users with only a `cx` ID couldn't paste it.
+- **Now**: a new `#cse-cx-input` field sits at the top of the existing `#cse-row` and is labelled "CSE cx ID (preferred)". The legacy URL field stays as a fallback labelled "CSE Main Address (fallback)".
+  - `popup/query.js`: new `storeCSECx(str)` writes to `chrome.storage.local.cseCx`; new `restoreCSECxFromStorage()` rehydrates the input on popup open; the input is wired with the same `change keyup` handler as the URL field.
+  - `background/runner.js#_nextRunner`: when `searchEngine === 'cse'`, reads both `cse` and `cseCx`. If a non-empty `cseCx` is set, builds the URL from cx using the **exact same template** as `cseSearchUrls()` in `cli/paris.js`. Falls back to the existing URL-field path when `cseCx` is empty — no breaking change for users who already pasted a full URL.
+  - The new field is `encodeURIComponent`'d when injected into the URL (cx IDs contain `:`).
+
+### Compatibility
+- Existing users who already configured the CSE URL field see no change. The cx field is opt-in.
+- Browser-extension Manifest V3, content scripts, and service worker continue to load `content/email-extractor.js` unchanged. The new content-script wiring uses `typeof window.EmailExtractor.extractFromHtml === 'function'` so older builds still work.
+- CLI behaviour unchanged.
+
+### Validation
+- Syntax: `background/runner.js`, `popup/query.js`, `content/duckduckgo.js`, `popup/popup.html` all pass.
+- URL builder smoke (mock): `cx`-only, `cx` wins over URL when both set, URL fallback, and neither-set (no-op) all behave correctly.
+- v4.7 regression: end-to-end fixture (Cloudflare cfemail + CSS split + RTL bdo + split-span + script + standard) still produces the expected 6 emails with correct source labels.
+- Version bumped to 4.8.0 (`package.json`, `manifest.json`).
+
 ## [4.7.0] - 2026-05-03
 
 ### 🔍 Five new structural extraction methods

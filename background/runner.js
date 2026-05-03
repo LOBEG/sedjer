@@ -427,7 +427,7 @@ function _nextRunner() {
         return;
     }
 
-    chrome.storage.local.get(['cse', 'searchEngine'], function (items) {
+    chrome.storage.local.get(['cse', 'cseCx', 'searchEngine'], function (items) {
 
         var engine = items.searchEngine || 'cse';
         var query = encodeURIComponent(allQueries[currentQuery]);
@@ -441,9 +441,19 @@ function _nextRunner() {
                 url = 'https://www.bing.com/search?q=' + query + '&count=50';
                 break;
             default: // 'cse'
-                url = items.cse;
-                if (!url) { return }
-                url += '&q=' + query + '&ia=web';
+                // v4.8: prefer a CSE cx ID when supplied (parity with CLI's
+                // --cse <cx>). When set, build the URL ourselves using the
+                // same template as cseSearchUrls() in cli/paris.js. Falls
+                // back to the legacy "CSE Main Address" field if no cx.
+                var cx = (items.cseCx || '').trim();
+                if (cx) {
+                    url = 'https://cse.google.com/cse?cx=' + encodeURIComponent(cx) +
+                          '&q=' + query + '&ia=web';
+                } else {
+                    url = items.cse;
+                    if (!url) { return; }
+                    url += '&q=' + query + '&ia=web';
+                }
                 break;
         }
 
