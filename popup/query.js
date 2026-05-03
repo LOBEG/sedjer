@@ -118,6 +118,7 @@ function restoreMinConfidence() {
         if (!$('#minConfidenceInput').length) return;
         var v = items.minConfidence;
         if (typeof v !== 'number' || !isFinite(v) || v < 0) v = 30;
+        if (v > 100) v = 100;
         $('#minConfidenceInput').val(v);
     });
 }
