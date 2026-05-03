@@ -44,6 +44,39 @@
             <div class="row">
                 <div class="col-sm-4">
                     <div class="form-group">
+                        <label for="industry-select" style="line-height: 32px;">Industry (optional)</label>
+                    </div>
+                </div>
+                <div class="col-sm-8">
+                    <div class="form-group">
+                        <select class="form-control" id="industry-select" title="When set, prepends an OR-clause of vertical-specific keywords to every footprint query (mirrors CLI --industry).">
+                            <option value="">— Any industry —</option>
+                            <option value="automotive">Automotive</option>
+                            <option value="biotech">Biotech</option>
+                            <option value="construction">Construction</option>
+                            <option value="consulting">Consulting</option>
+                            <option value="ecommerce">E-commerce</option>
+                            <option value="education">Education</option>
+                            <option value="energy">Energy</option>
+                            <option value="fintech">FinTech</option>
+                            <option value="gaming">Gaming</option>
+                            <option value="healthcare">Healthcare</option>
+                            <option value="hospitality">Hospitality</option>
+                            <option value="legal">Legal</option>
+                            <option value="logistics">Logistics</option>
+                            <option value="manufacturing">Manufacturing</option>
+                            <option value="marketing">Marketing</option>
+                            <option value="media">Media</option>
+                            <option value="nonprofit">Nonprofit</option>
+                            <option value="real-estate">Real Estate</option>
+                            <option value="saas">SaaS / B2B Software</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-sm-4">
+                    <div class="form-group">
                         <label for="country-select" style="line-height: 32px;">Country (optional)</label>
                     </div>
                 </div>
@@ -337,6 +370,13 @@
                                 <label>
                                     <input type="checkbox" checked id="deepScan">
                                     <b>Deep Scan pages</b>
+                                </label>
+                            </div>
+                            <div class="checkbox" style="margin-bottom: -5px;"
+                                 title="When checked AND Deep Scan is on, also fetches each result's /contact, /about, /team, /people, /staff, /leadership pages (depth-1 sub-paths). Mirrors CLI --follow-contact.">
+                                <label>
+                                    <input type="checkbox" id="followContactCheckbox">
+                                    <b>Follow /contact, /about, /team…</b>
                                 </label>
                             </div>
                             <div class="checkbox" style="margin-bottom: -5px;">

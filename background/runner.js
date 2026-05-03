@@ -26,7 +26,12 @@ serpdigger.runner = {
         minConfidence: 30,
         excludeRoles: true,
         excludeIsp: true,
-        rfcStrict: false
+        rfcStrict: false,
+        // v5.0: --follow-contact parity. OFF by default (matches CLI flag default).
+        followContact: false,
+        // v5.0: footprint-name in download filename (CLI v4.5 parity). Set
+        // by serpdigger.run() from queries.footprintLabel (resolved popup-side).
+        footprintLabel: ''
     } 
 };
 
@@ -103,6 +108,15 @@ chrome.storage.local.get('rfcStrict', function (items) {
     }
 });
 
+// v5.0: --follow-contact parity. When ON _deepFetchPage queues 14 well-known
+// contact-related sub-paths per result host so we pick up emails one click
+// away from the SERP-result landing page. Mirrors cli/paris.js#followContactSubpages.
+chrome.storage.local.get('followContact', function (items) {
+    if (items.followContact !== undefined && items.followContact !== null) {
+        serpdigger.runner.current.followContact = !!items.followContact;
+    }
+});
+
 // ── Deep-scan concurrency ──────────────────────────────────────────────────
 // Controls how many _deepFetchPage requests may be in-flight simultaneously.
 // Default: 6 (a reasonable balance between throughput and being polite to
@@ -138,6 +152,44 @@ function _drainDeepScanQueue() {
 function _enqueueDeepFetch(url, pattern, removeDuplicates) {
     _deepScanQueue.push({ url: url, pattern: pattern, removeDuplicates: removeDuplicates });
     _drainDeepScanQueue();
+}
+
+// v5.0: --follow-contact parity. After a successful deep-fetch we (optionally)
+// fan-out to a small fixed set of well-known contact-related sub-paths on the
+// same origin, mirroring cli/paris.js#CONTACT_SUBPATHS. Per-run host de-dup
+// (`_followContactSeenHosts`) prevents both N×N fan-out and infinite recursion
+// when one of the subpaths itself happens to be a deep-scan target.
+var CONTACT_SUBPATHS = [
+    '/contact', '/contact-us', '/contact_us',
+    '/about', '/about-us', '/about_us',
+    '/team', '/our-team', '/people', '/staff',
+    '/leadership', '/management', '/directory', '/employees',
+    '/impressum'
+];
+
+function _maybeQueueContactSubpaths(url, pattern, removeDuplicates) {
+    if (!serpdigger.runner.current.followContact) return;
+    var origin, pathname;
+    try {
+        var u = new URL(url);
+        origin   = u.origin;
+        pathname = u.pathname || '/';
+    } catch (e) { return; }
+    if (!origin) return;
+    // Only fan-out from the *result* page (root or short path). If the URL is
+    // already one of our own contact subpaths we skip — avoids recursion.
+    var lower = pathname.toLowerCase();
+    for (var i = 0; i < CONTACT_SUBPATHS.length; i++) {
+        if (lower.indexOf(CONTACT_SUBPATHS[i]) === 0) return;
+    }
+    if (!serpdigger.runner.current._followContactSeenHosts) {
+        serpdigger.runner.current._followContactSeenHosts = {};
+    }
+    if (serpdigger.runner.current._followContactSeenHosts[origin]) return;
+    serpdigger.runner.current._followContactSeenHosts[origin] = true;
+    CONTACT_SUBPATHS.forEach(function (p) {
+        _enqueueDeepFetch(origin + p, pattern, removeDuplicates);
+    });
 }
 
 chrome.runtime.onMessage.addListener(
@@ -467,6 +519,10 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         if (addedNew) {
             _notifyPopup('popup:emailCount', {count: serpdigger.runner.current.emailsFound.length});
         }
+        // v5.0: fan-out to /contact, /about, /team, … on the same origin
+        // when --follow-contact (popup checkbox) is ON. Per-host de-dup
+        // ensures we only do this once per origin per run.
+        _maybeQueueContactSubpaths(url, pattern, removeDuplicates);
     })
     .catch(function(err) {
         clearTimeout(timeout);
@@ -591,6 +647,9 @@ serpdigger.run = function (queries) {
     serpdigger.runner.current.currentQuery = 0;
     serpdigger.runner.current.allQueries = queries.str;
     serpdigger.runner.current.queries = queries.obj;
+    // v5.0: persist the footprint label for the download filename builder.
+    serpdigger.runner.current.footprintLabel = (queries && typeof queries.footprintLabel === 'string')
+        ? queries.footprintLabel : '';
     serpdigger.runner.current.emailsFound = [];
     serpdigger.runner.current.fetchedUrls = [];
     serpdigger.runner.current.pagesForCurrentQuery = 0;
@@ -601,6 +660,9 @@ serpdigger.run = function (queries) {
     // runner reads from current.seenEmails when adding new emails.
     serpdigger.runner.current.seenEmails = {};
     serpdigger.runner.current.skipSeen = false;
+    // v5.0: reset per-run host de-dup for --follow-contact fan-out so a
+    // fresh run isn't suppressed by a previous run's hosts.
+    serpdigger.runner.current._followContactSeenHosts = {};
 
     _notifyPopup('popup:emailCount', {count: 0});
     _notifyPopup('popup:progress', {
@@ -765,9 +827,24 @@ serpdigger.download = function (filterMode) {
         emails = serpdigger.runner.current.emailsFound;
     }
 
+    // v5.0: footprint-name in filename (CLI v4.5 parity). When the runner
+    // started with a non-empty footprint label, build paris-<label>-<ts>.txt;
+    // otherwise fall back to the legacy paris-email-extractor_<date>_<time>.txt
+    // form so existing user expectations / scripts still work.
+    var rawLabel = serpdigger.runner.current.footprintLabel || '';
+    var safeLabel = String(rawLabel)
+        .toLowerCase()
+        .replace(/[^a-z0-9_\-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .replace(/-{2,}/g, '-')
+        .slice(0, 32);
+    var filename = safeLabel
+        ? 'paris-' + safeLabel + '_' + dateString + '_' + timeString + suffix + '.txt'
+        : 'paris-email-extractor_' + dateString + '_' + timeString + suffix + '.txt';
+
     chrome.downloads.download({
         url: 'data:text/plain;base64,' + btoa(emails.join("\r\n")),
-        filename: 'paris-email-extractor_'+dateString+'_'+timeString+suffix+'.txt',
+        filename: filename,
         saveAs: true
     });
 };

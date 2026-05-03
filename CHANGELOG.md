@@ -2,6 +2,39 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [5.0.0] - 2026-05-03
+
+### 🌐 Browser-extension parity, round 3 — industry, follow-contact, footprint-aware filename, shadow DOM
+
+Closes the next batch of CLI → extension parity gaps and lands the first new "section 1b" power feature (shadow-DOM traversal).
+
+#### Industry targeting (CLI v4.6 `--industry` parity)
+- `popup/popup.html` — new `#industry-select` dropdown placed above the existing Country row. Lists all 19 verticals from `cli/paris.js#INDUSTRY_KEYWORDS` (saas, fintech, healthcare, biotech, real-estate, education, manufacturing, marketing, legal, ecommerce, logistics, energy, hospitality, construction, automotive, media, gaming, nonprofit, consulting), plus an "— Any industry —" sentinel default.
+- `popup/query.js` — copied `INDUSTRY_KEYWORDS` map verbatim into `POPUP_INDUSTRY_KEYWORDS` (must stay in sync with CLI; same convention as `POPUP_COUNTRY_TLDS`). New `popupApplyIndustryFilter(query, name)` mirrors `applyIndustryFilter()`: prepends `(kw1 OR kw2 OR …) ` to the line, with the same "skip if industry name already present" guard. New `storeIndustry`/`restoreIndustry` against `chrome.storage.local.industry`.
+- Application order in `getQueries()`: country-TLD prepending first (so the country `site:` filter binds to the original footprint), then industry-keyword prepending — exactly mirroring CLI ordering for natural reading and identical search-engine behaviour.
+
+#### `--follow-contact` deep DB scan (CLI v4.2 parity)
+- `popup/popup.html` — new `#followContactCheckbox` next to "Deep Scan pages" / "Auto MX validate".
+- `popup/query.js` — `storeFollowContact` / `restoreFollowContact` against `chrome.storage.local.followContact`; `state:setFollowContact` runtime event.
+- `background/runner.js` — copied `CONTACT_SUBPATHS` array verbatim from CLI (14 paths: `/contact[-_us]`, `/about[-_us]`, `/team`, `/our-team`, `/people`, `/staff`, `/leadership`, `/management`, `/directory`, `/employees`, `/impressum`). New `_maybeQueueContactSubpaths(url, …)` invoked at the end of every successful `_deepFetchPage`. Per-run host-set (`_followContactSeenHosts`, reset in `serpdigger.run`) prevents N×N fan-out and infinite recursion. The fan-out is suppressed when the URL itself is already a contact subpath. Reuses the existing concurrency limiter (`deepScanConcurrency`) and skip-seen / dedup machinery.
+- `background/communication.js` — new `state:setFollowContact` listener.
+
+#### Footprint-aware download filename (CLI v4.5 parity)
+- `popup/query.js#getQueries()` now resolves a sanitised `footprintLabel` from the first non-empty footprint line (lowercased, alnum + dash + underscore only, capped at 32 chars; multi-line footprints tag the run as `custom`) and passes it back inside the `state:start` payload.
+- `background/runner.js#serpdigger.run` persists the label on `runner.current.footprintLabel`; `serpdigger.download()` builds `paris-<safe-label>_<ts>[suffix].txt` when present and falls back to the legacy `paris-email-extractor_<date>_<time>[suffix].txt` filename when empty (so any existing user expectations / scripts keep working).
+
+#### New: Shadow-DOM traversal (section 1b power feature)
+- `content/duckduckgo.js` — new `_collectOuterHtmlWithShadows(rootEl)` helper concatenates the host's `outerHTML` with the `innerHTML` of every reachable open shadow root (recursively). Both SERP-card branches (Google CSE / Google / Bing / generic) now use it, enriching the `rawHtml` fed to `EmailExtractor.extractFromHtml`. Closed shadow roots remain inaccessible by design. A 5,000-node descent cap protects against pathological pages, and any error in shadow traversal silently degrades to plain `outerHTML` — guaranteeing zero regression on normal SERP pages.
+
+#### Defaults preserve current behaviour
+| Setting | Default | Storage key |
+|---|---|---|
+| Industry | empty | `industry` |
+| Follow contact | OFF | `followContact` |
+| Footprint label | empty (legacy filename) | derived per run |
+
+Users who don't touch the new controls see exactly the same extension behaviour as v4.9.
+
 ## [4.9.0] - 2026-05-03
 
 ### 🌐 Browser-extension parity, round 2 — filter-options exposure

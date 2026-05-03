@@ -10,6 +10,51 @@ var runner;
 var newPage = 2;
 var log = new Log('duckduckgo');
 
+// v5.0: shadow-DOM walker. Many modern marketing widgets (LinkedIn lite
+// embeds, Apollo "people" cards, ZoomInfo profile cards) wrap their contact
+// blocks in *open* shadow roots, which are invisible to outerHTML on the
+// host. We can only see open shadows (closed are inaccessible by design),
+// but that already covers most B2B widgets in practice. Returns the
+// concatenated innerHTML of every open shadow root reachable from `root`,
+// pre-fixed by the host's outerHTML so the standard extractor sees both.
+// On any error or when there are zero shadow roots we fall back gracefully
+// to plain outerHTML — guaranteeing zero regression for normal SERP pages.
+function _collectOuterHtmlWithShadows(root) {
+    if (!root) return '';
+    var base = '';
+    try { base = root.outerHTML || ''; } catch (e) { base = ''; }
+    var parts = [base];
+    try {
+        // Cheap pre-check: avoid the walker entirely on the common case.
+        var anyShadow = root.querySelector ? root.querySelector('*') : null;
+        if (!anyShadow) return base;
+        var stack = [root];
+        var visited = 0;
+        // Safety cap: don't descend more than 5,000 nodes per container —
+        // protects against pathological pages.
+        while (stack.length && visited < 5000) {
+            var el = stack.pop();
+            visited++;
+            if (!el) continue;
+            if (el.shadowRoot) {
+                try { parts.push(el.shadowRoot.innerHTML || ''); } catch (e) { /* ignore */ }
+                // Recurse into the shadow root's own children for nested shadows.
+                if (el.shadowRoot.children && el.shadowRoot.children.length) {
+                    for (var j = 0; j < el.shadowRoot.children.length; j++) {
+                        stack.push(el.shadowRoot.children[j]);
+                    }
+                }
+            }
+            if (el.children && el.children.length) {
+                for (var i = 0; i < el.children.length; i++) {
+                    stack.push(el.children[i]);
+                }
+            }
+        }
+    } catch (e) { /* shadow traversal best-effort */ }
+    return parts.length > 1 ? parts.join('\n') : base;
+}
+
 function Runner(options) {
     log.i('Runner/init');
     this.options = options;
@@ -220,7 +265,7 @@ Runner.prototype.extract = function () {
                 // split-span fragments and <script> bodies on the SERP card
                 // itself are caught. Fall back to text-only extraction on
                 // older builds where extractFromHtml isn't exported.
-                var rawHtml = (this.outerHTML || '');
+                var rawHtml = _collectOuterHtmlWithShadows(this);
                 var extractedEmails;
                 if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
                     extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, extractorOpts);
@@ -262,7 +307,7 @@ Runner.prototype.extract = function () {
             // Use enhanced email extractor if available
             if (window.EmailExtractor) {
                 // v4.7+: HTML-aware path — see the matching CSE branch above.
-                var rawHtml = (this.outerHTML || '');
+                var rawHtml = _collectOuterHtmlWithShadows(this);
                 var extractedEmails;
                 if (typeof window.EmailExtractor.extractFromHtml === 'function' && rawHtml) {
                     extractedEmails = window.EmailExtractor.extractFromHtml(rawHtml, extractorOpts);

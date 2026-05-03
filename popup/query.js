@@ -205,6 +205,74 @@ function storeCountry(val) {
     chrome.storage.local.set({ country: val || '' });
 }
 
+// v5.0: industry parity with CLI --industry. Mirrors INDUSTRY_KEYWORDS /
+// applyIndustryFilter / _normalizeIndustry from cli/paris.js. When the user
+// picks a vertical, getQueries() prepends an OR-clause of vertical-specific
+// keywords to every footprint line — same shape as the CLI emits.
+//
+// IMPORTANT: this map MUST stay in sync with cli/paris.js#INDUSTRY_KEYWORDS.
+// Add new verticals to BOTH files (and to popup/popup.html#industry-select).
+var POPUP_INDUSTRY_KEYWORDS = {
+    'saas':           ['"SaaS"', '"B2B software"', '"cloud platform"', '"product manager"'],
+    'fintech':        ['"fintech"', '"payments"', '"banking"', '"financial services"'],
+    'healthcare':     ['"healthcare"', '"clinic"', '"hospital"', '"medical"', '"physician"'],
+    'biotech':        ['"biotech"', '"pharmaceutical"', '"life sciences"', '"clinical research"'],
+    'real-estate':    ['"real estate"', '"realtor"', '"broker"', '"property"'],
+    'education':      ['"education"', '"university"', '"professor"', '"school"', '"academic"'],
+    'manufacturing':  ['"manufacturing"', '"factory"', '"production"', '"supply chain"'],
+    'marketing':      ['"marketing"', '"advertising"', '"brand"', '"agency"'],
+    'legal':          ['"law firm"', '"attorney"', '"lawyer"', '"counsel"', '"paralegal"'],
+    'ecommerce':      ['"ecommerce"', '"online store"', '"Shopify"', '"DTC"', '"retail"'],
+    'logistics':      ['"logistics"', '"freight"', '"shipping"', '"warehouse"', '"3PL"'],
+    'energy':         ['"energy"', '"oil & gas"', '"renewable"', '"solar"', '"utilities"'],
+    'hospitality':    ['"hospitality"', '"hotel"', '"restaurant"', '"travel"'],
+    'construction':   ['"construction"', '"contractor"', '"engineering"', '"architecture"'],
+    'automotive':     ['"automotive"', '"dealership"', '"car"', '"vehicle"'],
+    'media':          ['"media"', '"publishing"', '"journalism"', '"editor"', '"reporter"'],
+    'gaming':         ['"gaming"', '"game studio"', '"esports"', '"video games"'],
+    'nonprofit':      ['"nonprofit"', '"NGO"', '"charity"', '"foundation"'],
+    'consulting':     ['"consulting"', '"consultant"', '"advisory"', '"strategy"']
+};
+
+function popupApplyIndustryFilter(query, name) {
+    if (!name) return query;
+    var key = String(name).toLowerCase().trim().replace(/\s+/g, '-');
+    var kws = POPUP_INDUSTRY_KEYWORDS[key];
+    if (!kws || !kws.length) return query;
+    // Skip if the user already mentioned the vertical name verbatim, mirroring
+    // applyIndustryFilter() in cli/paris.js.
+    if (String(query).toLowerCase().indexOf(key) !== -1) return query;
+    return '(' + kws.join(' OR ') + ') ' + query;
+}
+
+function storeIndustry(val) {
+    chrome.storage.local.set({ industry: val || '' });
+}
+
+function restoreIndustry() {
+    chrome.storage.local.get('industry', function (items) {
+        var val = items.industry || '';
+        if ($('#industry-select').length) {
+            $('#industry-select').val(val);
+        }
+    });
+}
+
+// v5.0: --follow-contact parity. When ON, _deepFetchPage queues 14 well-known
+// contact-related sub-paths (/contact, /about, /team, …) per result host so
+// emails one click away from the landing page are picked up too.
+function storeFollowContact(val) {
+    chrome.storage.local.set({ followContact: !!val });
+}
+
+function restoreFollowContact() {
+    chrome.storage.local.get('followContact', function (items) {
+        if ($('#followContactCheckbox').length) {
+            $('#followContactCheckbox').get(0).checked = !!items.followContact;
+        }
+    });
+}
+
 function storeCountryTld(val) {
     chrome.storage.local.set({ countryRestrictTld: !!val });
 }
@@ -502,6 +570,17 @@ function getQueries() {
         });
     }
 
+    // v5.0: industry filter — prepend OR-clause of vertical-specific keywords
+    // to every footprint, mirroring CLI's applyIndustryFilter(). Done AFTER
+    // country-TLD prepending so the resulting query reads naturally
+    // ("(SaaS OR ...) site:.us \"@\" foo"), matching the CLI ordering.
+    var industryKey = $('#industry-select').length ? $('#industry-select').val() : '';
+    if (industryKey) {
+        footprintLines = footprintLines.map(function (line) {
+            return popupApplyIndustryFilter(line, industryKey);
+        });
+    }
+
     var queries = buildQueries(
         footprintLines,
 
@@ -535,9 +614,40 @@ function getQueries() {
 
     var result = {
         str: queriesStr,
-        obj: queries
+        obj: queries,
+        // v5.0: persist a sanitised footprint label so the runner can build
+        // a paris-<footprint>-<ts>.txt download filename (mirrors CLI v4.5).
+        // Picks the first non-empty raw footprint line; if multiple distinct
+        // lines are present we tag it "custom" to signal a multi-footprint run.
+        footprintLabel: _resolveFootprintLabel()
     };
     return result;
+}
+
+// v5.0: return a filesystem-safe label derived from the first footprint
+// input line. Empty input ⇒ '' (caller falls back to the legacy filename).
+function _resolveFootprintLabel() {
+    var raw = $('#footprint-input').val() || '';
+    var lines = raw.split(/[\n]+/g)
+        .map(function (s) { return s.trim(); })
+        .filter(function (s) { return s.length; });
+    if (!lines.length) return '';
+    var seenLines = {};
+    var unique = [];
+    lines.forEach(function (l) {
+        var k = l.toLowerCase();
+        if (!seenLines[k]) { seenLines[k] = true; unique.push(l); }
+    });
+    var first = unique[0];
+    var label = unique.length > 1 ? 'custom' : first;
+    // Keep alnum + dash + underscore; collapse whitespace; cap length to 32
+    // chars (matches the spirit of CLI's defaultDesktopFilename helper).
+    label = label.toLowerCase()
+        .replace(/[^a-z0-9_\-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .replace(/-{2,}/g, '-')
+        .slice(0, 32);
+    return label || 'custom';
 }
 
 _onInit(function () {
@@ -627,6 +737,18 @@ _onInit(function () {
             _sendEvent('state:setRfcStrict', {value: this.checked});
         });
     }
+    // v5.0: industry + follow-contact bindings.
+    if ($('#industry-select').length) {
+        $('#industry-select').on('change', function () {
+            storeIndustry($(this).val() || '');
+        });
+    }
+    if ($('#followContactCheckbox').length) {
+        $('#followContactCheckbox').on('click', function () {
+            storeFollowContact(this.checked);
+            _sendEvent('state:setFollowContact', {value: this.checked});
+        });
+    }
 
     $('#maxPagesInput').on('input change keyup', function () {
         var val = parseInt($(this).val(), 10);
@@ -686,6 +808,8 @@ _onInit(function () {
     restoreExcludeRoles();
     restoreExcludeIsp();
     restoreRfcStrict();
+    restoreIndustry();
+    restoreFollowContact();
     refreshSeenHistoryCount();
     
     log.i('after query : ', $('#delayInput').val());

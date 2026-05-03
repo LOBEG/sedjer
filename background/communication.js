@@ -107,6 +107,11 @@ _addListener("state:setRfcStrict", function (data, sender, respond) {
     serpdigger.runner.current.rfcStrict = !!(data && data.value);
     respond({ok: true});
 });
+// v5.0: --follow-contact toggle.
+_addListener("state:setFollowContact", function (data, sender, respond) {
+    serpdigger.runner.current.followContact = !!(data && data.value);
+    respond({ok: true});
+});
 
 _addListener("state:validateEmails", function (data, sender, respond) {
     serpdigger.validateEmails(function(results) {
