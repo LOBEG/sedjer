@@ -335,6 +335,36 @@ function _deepFetchPage(url, pattern, removeDuplicates) {
         };
         var extracted = EmailExtractor.extractEmails(combinedText, extractorOpts);
 
+        // ── v4.7: structural extractors ──────────────────────────────────
+        // Run the five HTML-aware passes (Cloudflare cfemail, CSS pseudo-
+        // elements, RTL-reversed text, fragment reconstruction, <script>
+        // bodies) on the ORIGINAL HTML and merge the results. These surface
+        // emails the regex-on-stripped-text path cannot see, especially on
+        // small-business sites that proxy through Cloudflare.
+        if (typeof EmailExtractor.extractFromHtml === 'function') {
+            try {
+                var structural = EmailExtractor.extractFromHtml(html, extractorOpts);
+                var seenForMerge = {};
+                for (var ei = 0; ei < extracted.length; ei++) {
+                    seenForMerge[extracted[ei].email] = ei;
+                }
+                for (var si = 0; si < structural.length; si++) {
+                    var sr = structural[si];
+                    var existing = seenForMerge[sr.email];
+                    if (existing === undefined) {
+                        extracted.push(sr);
+                        seenForMerge[sr.email] = extracted.length - 1;
+                    } else if (sr.confidence > extracted[existing].confidence) {
+                        // Prefer the higher-confidence record (e.g. Cloudflare
+                        // gets +5 and beats a duplicate "lenient" hit).
+                        extracted[existing] = sr;
+                    }
+                }
+            } catch (eStr) {
+                log.w('_deepFetchPage: structural extraction failed', eStr && eStr.message || eStr);
+            }
+        }
+
         // Apply filtering: minimum confidence, role exclusion, and (if a
         // pattern is supplied) restrict to that domain — otherwise exclude ISP.
         var patternDomain = null;

@@ -619,6 +619,456 @@
     EmailExtractor.stripGluedPlatformPrefix = stripGluedPlatformPrefix;
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // Structural extractors (v4.7)
+    // ═══════════════════════════════════════════════════════════════════════════
+    // These five passes operate on RAW HTML — no live DOM required — so they
+    // run identically in the content scripts, the service-worker deep-scan,
+    // and the standalone CLI. They surface emails the regex-on-stripped-text
+    // path cannot see.
+    //
+    //   1. Cloudflare cfemail (XOR-encoded mailto blobs)
+    //   2. CSS ::before/::after content strings
+    //   3. RTL / bidi-override reversal
+    //   4. Split-span / fragment reconstruction
+    //   5. <script> body decoding (literals, fromCharCode, atob, concat)
+    //
+    // Each returns an array of plain email strings; the caller pipes them
+    // through addEmail() in extractFromHtml() so dedup, validation and the
+    // platform-prefix scrub all apply automatically.
+
+    // List of inline elements whose closing/opening tags should be replaced
+    // with the EMPTY string (not a space) when flattening HTML to text.
+    // Block-level elements are still replaced with a space so we don't glue
+    // unrelated paragraphs together. This is the fix for split-span emails:
+    //   <span>jane</span><span>@</span><span>acme.com</span>
+    // collapses to "jane@acme.com" instead of "jane @ acme.com".
+    var _INLINE_TAGS = [
+        'span', 'b', 'i', 'em', 'strong', 'small', 'sup', 'sub',
+        'mark', 'wbr', 'q', 'code', 'tt', 'font', 'u', 's', 'strike',
+        'bdo', 'bdi', 'time', 'cite', 'abbr', 'dfn', 'ins', 'del',
+        'kbd', 'samp', 'var', 'ruby', 'rt', 'rp', 'a'
+    ];
+    var _INLINE_TAG_RE = new RegExp(
+        '<\\/?(?:' + _INLINE_TAGS.join('|') + ')\\b[^>]*>', 'gi'
+    );
+
+    /**
+     * Decode a Cloudflare email-obfuscation hex blob.
+     *
+     * Cloudflare rewrites every plaintext mailto: into something like:
+     *   <a href="/cdn-cgi/l/email-protection#abcdef..."
+     *      class="__cf_email__"
+     *      data-cfemail="abcdef...">[email&#160;protected]</a>
+     *
+     * The hex string is XOR-encoded: byte 0 is the key, and each remaining
+     * byte XOR'd against the key gives a printable ASCII character.
+     *
+     * @param {string} hex - lower-case hex string (data-cfemail / fragment).
+     * @returns {string} - decoded email, or '' on malformed input.
+     */
+    function _decodeCfEmail(hex) {
+        if (!hex || typeof hex !== 'string') return '';
+        hex = hex.replace(/[^0-9a-fA-F]/g, '');
+        if (hex.length < 4 || hex.length % 2 !== 0) return '';
+        var key = parseInt(hex.substring(0, 2), 16);
+        if (isNaN(key)) return '';
+        var out = '';
+        for (var i = 2; i < hex.length; i += 2) {
+            var b = parseInt(hex.substring(i, i + 2), 16);
+            if (isNaN(b)) return '';
+            out += String.fromCharCode(b ^ key);
+        }
+        return out;
+    }
+
+    /**
+     * Find every Cloudflare cfemail blob in `html` and return decoded emails.
+     *
+     * Looks at three carriers:
+     *   - data-cfemail="HEX"
+     *   - href="/cdn-cgi/l/email-protection#HEX"
+     *   - class="__cf_email__" with the hex payload in any nearby attribute
+     *     (we still anchor on data-cfemail; the class is a hint, not a payload).
+     */
+    function _extractCfEmails(html) {
+        var out = [];
+        if (!html || typeof html !== 'string') return out;
+        // Most reliable: explicit data-cfemail attribute.
+        var dataRe = /data-cfemail\s*=\s*["']([0-9a-fA-F]+)["']/gi;
+        var m;
+        while ((m = dataRe.exec(html)) !== null) {
+            var d = _decodeCfEmail(m[1]);
+            if (d && d.indexOf('@') !== -1) out.push(d);
+            if (m.index === dataRe.lastIndex) dataRe.lastIndex++;
+        }
+        // Fallback: the mailto-protection URL fragment.
+        var hrefRe = /\/cdn-cgi\/l\/email-protection#([0-9a-fA-F]+)/gi;
+        while ((m = hrefRe.exec(html)) !== null) {
+            var d2 = _decodeCfEmail(m[1]);
+            if (d2 && d2.indexOf('@') !== -1) out.push(d2);
+            if (m.index === hrefRe.lastIndex) hrefRe.lastIndex++;
+        }
+        return out;
+    }
+
+    /**
+     * Pull emails (or fragments that combine into emails) out of CSS
+     * `content:` declarations — the .email::after { content:"@acme.com" }
+     * trick. We scan two carriers:
+     *   - <style>…</style> blocks (any number of rules)
+     *   - inline style="content:'…'" attributes (rare but happens)
+     *
+     * Strategy:
+     *   - Single-pass: any content:"…" string that already contains "@" is
+     *     emitted as-is.
+     *   - Two-pass for the split form: when the same selector base has both
+     *     ::before { content:"X" } AND ::after { content:"Y" }, concatenate
+     *     X+text+Y candidates. We approximate by collecting all content
+     *     strings paired by their immediate selector and joining sequential
+     *     pairs whose concatenation looks like an email.
+     */
+    function _extractCssEmails(html) {
+        var out = [];
+        if (!html || typeof html !== 'string') return out;
+
+        // Collect every "content:'STRING'" inside <style> blocks and inline
+        // style attributes.
+        var contentValues = [];
+        var styleRe = /<style\b[^>]*>([\s\S]*?)<\/\s*style\s*>/gi;
+        var m;
+        while ((m = styleRe.exec(html)) !== null) {
+            _collectContentValues(m[1], contentValues);
+            if (m.index === styleRe.lastIndex) styleRe.lastIndex++;
+        }
+        var inlineRe = /style\s*=\s*"([^"]*content\s*:[^"]*)"/gi;
+        while ((m = inlineRe.exec(html)) !== null) {
+            _collectContentValues(m[1], contentValues);
+            if (m.index === inlineRe.lastIndex) inlineRe.lastIndex++;
+        }
+        var inlineRe2 = /style\s*=\s*'([^']*content\s*:[^']*)'/gi;
+        while ((m = inlineRe2.exec(html)) !== null) {
+            _collectContentValues(m[1], contentValues);
+            if (m.index === inlineRe2.lastIndex) inlineRe2.lastIndex++;
+        }
+
+        // Single-pass: any content string that ALREADY has "@".
+        for (var i = 0; i < contentValues.length; i++) {
+            var v = contentValues[i];
+            if (v.indexOf('@') !== -1) out.push(v);
+        }
+        // Pair-pass: ::before content + adjacent ::after value can split a
+        // single email across two CSS rules (e.g. content:"jane" + "@acme.com").
+        // Only emit a pair when the first piece has NO "@" AND the second
+        // STARTS with "@" — otherwise we'd hallucinate "ceo@acme.compress"
+        // from ["ceo@acme.com", "press"].
+        for (var j = 0; j + 1 < contentValues.length; j++) {
+            var a = contentValues[j];
+            var b = contentValues[j + 1];
+            if (a.indexOf('@') === -1 && b.charAt(0) === '@') {
+                var combo = a + b;
+                if (/^[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}$/.test(combo)) out.push(combo);
+            }
+        }
+        return out;
+    }
+    function _collectContentValues(cssText, dest) {
+        // Match content:"…" or content:'…'  (allow whitespace, nested escapes).
+        var re1 = /content\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+        var re2 = /content\s*:\s*'((?:[^'\\]|\\.)*)'/g;
+        var m;
+        while ((m = re1.exec(cssText)) !== null) {
+            dest.push(_unescapeCssString(m[1]));
+            if (m.index === re1.lastIndex) re1.lastIndex++;
+        }
+        while ((m = re2.exec(cssText)) !== null) {
+            dest.push(_unescapeCssString(m[1]));
+            if (m.index === re2.lastIndex) re2.lastIndex++;
+        }
+    }
+    function _unescapeCssString(s) {
+        // Decode \xx hex escapes (CSS uses unicode escape sequences).
+        return String(s || '').replace(/\\([0-9a-fA-F]{1,6})\s?/g, function (_, hex) {
+            try { return String.fromCodePoint(parseInt(hex, 16)); } catch (e) { return ''; }
+        }).replace(/\\(.)/g, '$1');
+    }
+
+    // Bidi control characters that flip text direction at the codepoint level
+    // (used to display "moc.emca@enaj" as "jane@acme.com" in the browser).
+    var _BIDI_CTRL_RE = /[\u202A-\u202E\u2066-\u2069]/g;
+
+    /**
+     * Find email-shaped strings hidden via right-to-left styling and return
+     * them in normal (LTR) order.
+     *
+     * Carriers:
+     *   - <bdo dir="rtl">…</bdo>  /  any tag with style="direction:rtl"
+     *     style="unicode-bidi:bidi-override"
+     *   - free-floating text containing the U+202E "RIGHT-TO-LEFT OVERRIDE"
+     *     control character, where reversing the substring produces an
+     *     email shape.
+     */
+    function _extractRtlEmails(html) {
+        var out = [];
+        if (!html || typeof html !== 'string') return out;
+
+        // 1) Tagged RTL elements: capture inner text, reverse, regex.
+        //    Match <bdo dir="rtl">…</bdo> and tags with the RTL CSS hint.
+        var rtlTagRes = [
+            /<bdo\b[^>]*\bdir\s*=\s*["']?rtl["']?[^>]*>([\s\S]*?)<\/\s*bdo\s*>/gi,
+            /<([a-z][a-z0-9]*)\b[^>]*\bstyle\s*=\s*"[^"]*(?:direction\s*:\s*rtl|unicode-bidi\s*:\s*bidi-override)[^"]*"[^>]*>([\s\S]*?)<\/\s*\1\s*>/gi,
+            /<([a-z][a-z0-9]*)\b[^>]*\bstyle\s*=\s*'[^']*(?:direction\s*:\s*rtl|unicode-bidi\s*:\s*bidi-override)[^']*'[^>]*>([\s\S]*?)<\/\s*\1\s*>/gi
+        ];
+        for (var r = 0; r < rtlTagRes.length; r++) {
+            var re = rtlTagRes[r];
+            re.lastIndex = 0;
+            var m;
+            while ((m = re.exec(html)) !== null) {
+                // Last capture is always the inner text; first regex has 1
+                // group, the others have 2 (tag name + content).
+                var inner = m[m.length - 1] || '';
+                inner = inner.replace(/<[^>]+>/g, '').replace(_BIDI_CTRL_RE, '').trim();
+                if (!inner) {
+                    if (m.index === re.lastIndex) re.lastIndex++;
+                    continue;
+                }
+                var rev = _reverseString(inner);
+                _harvestEmailsInto(rev, out);
+                if (m.index === re.lastIndex) re.lastIndex++;
+            }
+        }
+
+        // 2) Free-floating bidi-override control character. We split on each
+        //    U+202E and try reversing the up-to-80-char tail; if it matches
+        //    an email shape, emit it.
+        if (_BIDI_CTRL_RE.test(html)) {
+            // Reset because test() advances lastIndex on global regexes.
+            _BIDI_CTRL_RE.lastIndex = 0;
+            var pieces = html.split(/[\u202A-\u202E\u2066-\u2069]/);
+            for (var p = 1; p < pieces.length; p++) {
+                var tail = pieces[p].slice(0, 120);
+                _harvestEmailsInto(_reverseString(tail), out);
+            }
+        }
+        return out;
+    }
+    function _reverseString(s) {
+        // Use Array.from to handle surrogate pairs / Unicode safely.
+        try { return Array.from(String(s)).reverse().join(''); }
+        catch (e) { return String(s).split('').reverse().join(''); }
+    }
+    function _harvestEmailsInto(text, dest) {
+        var re = /[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+        var m;
+        while ((m = re.exec(text)) !== null) {
+            dest.push(m[0]);
+            if (m.index === re.lastIndex) re.lastIndex++;
+        }
+    }
+
+    /**
+     * Strip <script> and <style> blocks and replace inline tags with the
+     * EMPTY string before stripping all remaining tags with a space. Result:
+     * fragmented emails like
+     *   <span>jane</span>@<span>acme.com</span>
+     * collapse correctly to "jane@acme.com" instead of being torn apart by
+     * spaces, while paragraph boundaries (<p>, <div>, <br>, …) still produce
+     * a space so we don't glue unrelated lines.
+     */
+    function _htmlToTextPreservingInline(html) {
+        if (!html || typeof html !== 'string') return '';
+        return String(html)
+            .replace(/<script\b[^>]*>[\s\S]*?<\/\s*script\s*>/gi, ' ')
+            .replace(/<style\b[^>]*>[\s\S]*?<\/\s*style\s*>/gi, ' ')
+            .replace(/<!--[\s\S]*?-->/g, ' ')
+            // Empty-string substitution for inline tags so split-span emails
+            // reconstruct cleanly.
+            .replace(_INLINE_TAG_RE, '')
+            // Everything else (block tags) becomes a space.
+            .replace(/<[^>]+>/g, ' ')
+            // Normalise whitespace.
+            .replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+            .replace(/&nbsp;/gi, ' ')
+            .replace(/&quot;/gi, '"')
+            .replace(/&apos;/gi, "'")
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&#x([0-9a-fA-F]+);/g, function (_, h) {
+                try { return String.fromCodePoint(parseInt(h, 16)); } catch (e) { return ' '; }
+            })
+            .replace(/&#(\d+);/g, function (_, d) {
+                try { return String.fromCodePoint(parseInt(d, 10)); } catch (e) { return ' '; }
+            })
+            .replace(/&amp;/gi, '&');
+    }
+
+    /**
+     * Scan every <script> body for emails encoded four common ways:
+     *   5a. plain string literals  ("jane@acme.com")
+     *   5b. String.fromCharCode([…])  arrays
+     *   5c. atob("base64-of-email")
+     *   5d. concatenated literals    ("jane" + "@" + "acme.com")
+     *
+     * We deliberately skip <script type="application/ld+json"> because the
+     * caller (CLI / SW deep-scan) already preserves JSON-LD content in a
+     * separate pass and we'd just double-count.
+     */
+    function _extractScriptEmails(html) {
+        var out = [];
+        if (!html || typeof html !== 'string') return out;
+        var scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/\s*script\s*>/gi;
+        var m;
+        while ((m = scriptRe.exec(html)) !== null) {
+            var attrs = m[1] || '';
+            var body  = m[2] || '';
+            // Skip JSON-LD / non-JS / external scripts.
+            if (/type\s*=\s*["'][^"']*ld\+json["']/i.test(attrs)) {
+                if (m.index === scriptRe.lastIndex) scriptRe.lastIndex++;
+                continue;
+            }
+            if (/src\s*=/i.test(attrs) && body.replace(/\s/g, '') === '') {
+                if (m.index === scriptRe.lastIndex) scriptRe.lastIndex++;
+                continue;
+            }
+
+            // 5a — string literals containing @
+            var litRe = /(["'])((?:\\.|(?!\1).){2,200})\1/g;
+            var lm;
+            while ((lm = litRe.exec(body)) !== null) {
+                var raw = lm[2].replace(/\\(.)/g, '$1');
+                if (raw.indexOf('@') !== -1) _harvestEmailsInto(raw, out);
+                if (lm.index === litRe.lastIndex) litRe.lastIndex++;
+            }
+
+            // 5b — String.fromCharCode([…])
+            var charRe = /String\.fromCharCode\s*\(\s*([\d,\s]+)\s*\)/g;
+            var cm;
+            while ((cm = charRe.exec(body)) !== null) {
+                var nums = cm[1].split(',').map(function (n) { return parseInt(n, 10); }).filter(function (n) { return !isNaN(n) && n > 0 && n < 0x10FFFF; });
+                if (nums.length) {
+                    var s = '';
+                    try { s = String.fromCodePoint.apply(null, nums); } catch (e) { s = ''; }
+                    if (s.indexOf('@') !== -1) _harvestEmailsInto(s, out);
+                }
+                if (cm.index === charRe.lastIndex) charRe.lastIndex++;
+            }
+
+            // 5c — atob("base64")
+            var atobRe = /atob\s*\(\s*["']([A-Za-z0-9+/=]{8,})["']\s*\)/g;
+            var am;
+            while ((am = atobRe.exec(body)) !== null) {
+                var dec = _safeBase64Decode(am[1]);
+                if (dec && dec.indexOf('@') !== -1) _harvestEmailsInto(dec, out);
+                if (am.index === atobRe.lastIndex) atobRe.lastIndex++;
+            }
+
+            // 5d — concatenated literals: "a" + "b" + "c"
+            var concatRe = /(["'])((?:\\.|(?!\1).)*)\1(?:\s*\+\s*(["'])((?:\\.|(?!\3).)*)\3){1,8}/g;
+            var ccm;
+            while ((ccm = concatRe.exec(body)) !== null) {
+                var pieces = [];
+                var partRe = /(["'])((?:\\.|(?!\1).)*)\1/g;
+                var pm;
+                while ((pm = partRe.exec(ccm[0])) !== null) {
+                    pieces.push(pm[2].replace(/\\(.)/g, '$1'));
+                    if (pm.index === partRe.lastIndex) partRe.lastIndex++;
+                }
+                var joined = pieces.join('');
+                if (joined.indexOf('@') !== -1) _harvestEmailsInto(joined, out);
+                if (ccm.index === concatRe.lastIndex) concatRe.lastIndex++;
+            }
+
+            if (m.index === scriptRe.lastIndex) scriptRe.lastIndex++;
+        }
+        return out;
+    }
+    function _safeBase64Decode(s) {
+        // Works in browser (atob), Node (Buffer), and service-worker contexts.
+        try {
+            if (typeof atob === 'function') {
+                return atob(s);
+            }
+        } catch (e) { /* malformed input */ return ''; }
+        try {
+            if (typeof Buffer !== 'undefined') {
+                return Buffer.from(s, 'base64').toString('binary');
+            }
+        } catch (e) { /* fall through */ }
+        return '';
+    }
+
+    /**
+     * One-stop HTML → emails entry point that runs the five structural
+     * extractors AND the existing text regex over an inline-preserving
+     * tag-strip. Returns the same record shape as `extractEmails()`.
+     *
+     * This is the function CLI / service-worker / content scripts should
+     * prefer for any input that contains markup. Plain-text callers should
+     * keep using `extractEmails()` directly.
+     */
+    EmailExtractor.extractFromHtml = function (html, options) {
+        options = options || {};
+        var out = [];
+        var seen = {};
+        function push(records) {
+            for (var i = 0; i < records.length; i++) {
+                var r = records[i];
+                if (!seen[r.email]) {
+                    seen[r.email] = true;
+                    out.push(r);
+                } else {
+                    // Keep the highest confidence we've seen for this email.
+                    for (var k = 0; k < out.length; k++) {
+                        if (out[k].email === r.email && r.confidence > out[k].confidence) {
+                            out[k] = r;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!html || typeof html !== 'string') return out;
+
+        // Run each structural extractor and shove its findings through the
+        // existing extractEmails() pipeline (one fake-text-blob per source)
+        // so dedup, validation, and the platform-prefix scrub apply
+        // automatically.
+        function ingest(label, list, bonus) {
+            if (!list || !list.length) return;
+            // Join with newlines so the regex can pick each email cleanly.
+            var blob = list.join('\n');
+            var recs = EmailExtractor.extractEmails(blob, options);
+            // Re-label and re-score — the pipeline labelled them "standard".
+            for (var i = 0; i < recs.length; i++) {
+                recs[i].source = label;
+                recs[i].confidence = Math.max(0, Math.min(100, (recs[i].confidence || 0) + (bonus || 0)));
+            }
+            push(recs);
+        }
+
+        ingest('cloudflare', _extractCfEmails(html), +5);
+        ingest('css',        _extractCssEmails(html), 0);
+        ingest('rtl',        _extractRtlEmails(html), 0);
+        ingest('script',     _extractScriptEmails(html), -5);
+
+        // Finally, the regular text pass — but using the inline-preserving
+        // tag-stripper so split-span emails are reconstructed.
+        var text = _htmlToTextPreservingInline(html);
+        push(EmailExtractor.extractEmails(text, options));
+        return out;
+    };
+
+    // Expose the helpers — useful for tests and for the CLI / SW which
+    // already do their own preserve-mailto / preserve-jsonld pre-processing
+    // and just want the inline-preserving tag stripper.
+    EmailExtractor._htmlToTextPreservingInline = _htmlToTextPreservingInline;
+    EmailExtractor._decodeCfEmail = _decodeCfEmail;
+    EmailExtractor._extractCfEmails = _extractCfEmails;
+    EmailExtractor._extractCssEmails = _extractCssEmails;
+    EmailExtractor._extractRtlEmails = _extractRtlEmails;
+    EmailExtractor._extractScriptEmails = _extractScriptEmails;
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // Contact-name association
     // ═══════════════════════════════════════════════════════════════════════════
     // After extracting an email, scan the surrounding HTML for a likely
@@ -737,10 +1187,11 @@
         options = options || {};
         if (!html || typeof html !== 'string') return [];
 
-        // First pass: extract emails from the (tag-stripped) text so the
-        // existing patterns and validation rules apply unchanged.
-        var text = _stripTags(html);
-        var results = EmailExtractor.extractEmails(text, options);
+        // First pass: full HTML-aware extraction (Cloudflare cfemail, CSS
+        // ::before/::after content, RTL-reversed text, fragmented split
+        // spans, <script> bodies, plus the standard text-regex run over an
+        // inline-preserving tag-strip).
+        var results = EmailExtractor.extractFromHtml(html, options);
 
         // Second pass: for each unique email, find its FIRST occurrence in
         // the original HTML (case-insensitive) and attach a nearby name.

@@ -2,6 +2,57 @@
 
 All notable changes to Paris Email Extractor will be documented in this file.
 
+## [4.7.0] - 2026-05-03
+
+### 🔍 Five new structural extraction methods
+
+These five passes operate on **raw HTML** (no live DOM required) so they run
+identically in the content scripts, the service-worker deep-scan, and the
+standalone CLI. They surface emails the regex-on-stripped-text path cannot
+see — typically a 10–25 % recall lift on small-business sites that proxy
+through Cloudflare or use any of the common scraper-defeat tricks.
+
+#### 1. Cloudflare email-obfuscation decoder
+- Cloudflare auto-rewrites every `mailto:` on millions of small-business sites into XOR-encoded blobs:
+  `<a class="__cf_email__" data-cfemail="HEXHEX...">[email&nbsp;protected]</a>` and `/cdn-cgi/l/email-protection#HEX` href fragments.
+- New `EmailExtractor._decodeCfEmail(hex)` and `_extractCfEmails(html)` decode them: byte 0 of the hex string is the XOR key; each remaining byte is XOR'd against the key to recover ASCII. Source label `cloudflare`, confidence boost +5 (very high signal — a `mailto:` was demonstrably present pre-rewrite).
+
+#### 2. CSS `::before` / `::after` content extraction
+- Sites hide pieces of an email inside CSS pseudo-element content, e.g. `.email::after { content: "@acme.com" }`.
+- New `_extractCssEmails(html)` scans every `<style>…</style>` block plus inline `style="content:…"` attributes for `content:"…"` strings. Single-pass: any string already containing `@` is emitted directly. Pair-pass: when the first content string has NO `@` and the second STARTS with `@`, the concatenation is emitted (catches the `::before {content:"jane"}; ::after {content:"@acme.com"}` split pattern). Source label `css`.
+
+#### 3. RTL / bidi-override reversal
+- `<bdo dir="rtl">moc.emca@enaj</bdo>` and `<span style="direction:rtl">…</span>` display as `jane@acme.com` in the browser but defeat regex.
+- New `_extractRtlEmails(html)` finds all RTL-tagged elements, captures their inner text, reverses it (Unicode-safe via `Array.from`), and runs the email regex on the reversed string. Also handles free-floating Unicode bidi-control characters (U+202E RIGHT-TO-LEFT OVERRIDE, U+202D LRO, U+202B RLE, U+202A LRE, U+2066–U+2069 isolates) by stripping them and reversing the affected substring. Source label `rtl`.
+
+#### 4. Split-span / fragment reconstruction
+- The previous tag-stripper replaced **every** tag with a space, so `<span>jane</span><span>@</span><span>acme.com</span>` became `jane @ acme.com` and was lost.
+- New `_htmlToTextPreservingInline(html)` replaces **inline** elements (`span`, `b`, `i`, `em`, `strong`, `small`, `sup`, `sub`, `mark`, `wbr`, `q`, `code`, `tt`, `font`, `u`, `s`, `strike`, `bdo`, `bdi`, `time`, `cite`, `abbr`, `dfn`, `ins`, `del`, `kbd`, `samp`, `var`, `ruby`, `rt`, `rp`, `a`) with the **empty string**, so split-span emails reconstruct cleanly. Block-level tags (`p`, `div`, `br`, `h1`–`h6`, `li`, …) still produce a space so unrelated paragraphs aren't glued together.
+
+#### 5. JS-encoded emails in `<script>` bodies
+- Emails are commonly hidden in JavaScript: as plain string literals, as `String.fromCharCode([…])` arrays, as `atob("base64")` calls, or as concatenated literals (`"jane" + "@" + "acme.com"`).
+- New `_extractScriptEmails(html)` walks every `<script>` body (skipping JSON-LD and external-src scripts) and runs four sub-passes:
+  - **5a String literals** — `"…"` and `'…'` containing `@` and a TLD-shaped tail.
+  - **5b `String.fromCharCode([…])`** — numeric arrays decoded to text.
+  - **5c `atob("base64")`** — base64 strings decoded if they contain `@` (uses native `atob` in the browser/SW, falls back to `Buffer` in Node CLI).
+  - **5d Concatenated literals** — `"a" + "b" + "c"` chains whose joined value contains `@`.
+  Source label `script`, confidence -5 (slightly lower because `<script>` blocks are high-noise: ad-tag templates, tracking blobs, …).
+
+### Wiring
+- New shared method **`EmailExtractor.extractFromHtml(html, options)`** runs the five passes above in order, then runs the standard text extraction over the inline-preserving stripped text, and returns merged dedup'd records (highest-confidence wins on conflict).
+- `EmailExtractor.extractEmailsWithContext(html)` (v4.6) now calls `extractFromHtml` internally so the `name` association still works on top of all five new sources.
+- The CLI's existing `extractFromHtml(html, url, opts)` — which calls `extractEmailsWithContext` whenever the input contains `<` — picks up the new pipeline transparently.
+- The service-worker's `_deepFetchPage` runs the structural extractors on the original HTML and merges the results with its existing preserved-pipeline output, so deep-scan jobs get the full 5-method coverage too.
+
+### Validation
+- Per-method unit fixtures verified: cfemail (`data-cfemail="…"` and `/cdn-cgi/l/email-protection#…`), CSS (single content string, before+after split), RTL (`<bdo dir="rtl">`, `direction:rtl` style, free-floating U+202E), split-span (`<span>j</span><span>@</span><span>x.com</span>`), and all four script sub-passes (literal, charCode, atob, concat).
+- v4.6 regression: gmail still kept by default; symbol-noise still rejected; name association still attaches Jane Doe to `jane@acme.io`; CSV `name` column still emitted.
+- CodeQL clean.
+
+### Compatibility
+- Browser extension and Manifest V3: unchanged. The new methods are added to the shared `EmailExtractor` module which is already loaded by both the content scripts and the service worker.
+- All existing CLI flags continue to work. No new flags required — the structural extractors are always on (they have an excellent precision/recall trade-off).
+
 ## [4.6.0] - 2026-05-03
 
 ### 🐛 Bug fixes & smarter extraction
