@@ -40,6 +40,9 @@ if (!EmailExtractor) {
     process.exit(2);
 }
 
+// SMTP RCPT-level verifier (Node-only — see cli/paris-smtp.js).
+var ParisSmtp = require(path.join(__dirname, 'paris-smtp.js'));
+
 // Resolve the package version once so banners, --version, and the
 // User-Agent header all stay in sync with package.json.
 var PARIS_VERSION = (function () {
@@ -371,7 +374,98 @@ function _filterOptsFromArgs(args) {
     };
     if (args.flags.domain) opts.domainPattern = String(args.flags.domain).replace(/^@/, '');
     if (args.flags['exclude-catchall']) opts.excludeCatchAll = true;
+    if (args.flags['exclude-disposable']) opts.excludeDisposable = true;
     return opts;
+}
+
+// Parse --smtp / --smtp-* flags into a single options bag for paris-smtp.js.
+function _smtpOptsFromArgs(args) {
+    if (!args.flags.smtp) return null;
+    var concurrency = args.flags['smtp-concurrency'] != null
+        ? parseInt(args.flags['smtp-concurrency'], 10) : 4;
+    if (!isFinite(concurrency) || concurrency < 1) concurrency = 4;
+    var timeoutMs = args.flags['smtp-timeout'] != null
+        ? parseInt(args.flags['smtp-timeout'], 10) : 10000;
+    if (!isFinite(timeoutMs) || timeoutMs < 1000) timeoutMs = 10000;
+    return {
+        concurrency: concurrency,
+        timeoutMs:   timeoutMs,
+        helo:        args.flags['smtp-helo'] || 'paris-verifier.local',
+        from:        args.flags['smtp-from'] || ('postmaster@' + (args.flags['smtp-helo'] || 'paris-verifier.local')),
+        port:        args.flags['smtp-port'] != null ? parseInt(args.flags['smtp-port'], 10) : 25,
+        detectCatchAll: true
+    };
+}
+
+// Run the SMTP verification step over a list of records and merge the
+// results back. Mutates and returns the same array. `excludeCatchAll`
+// drops any record on a catch-all domain (only when SMTP ran). The
+// `--exclude-disposable` filter is applied here too because it's
+// conceptually deliverability — but cheap, so we apply it even without
+// --smtp via _applyDisposableFilter().
+function _applySmtpStep(records, args) {
+    var smtpOpts = _smtpOptsFromArgs(args);
+    if (!smtpOpts) return Promise.resolve(records);
+    if (!records || !records.length) return Promise.resolve(records);
+
+    process.stderr.write('SMTP-verifying ' + records.length + ' email(s) (concurrency=' + smtpOpts.concurrency + ', timeout=' + smtpOpts.timeoutMs + 'ms)…\n');
+    smtpOpts.onProgress = function (done, total) {
+        process.stderr.write('\r  smtp ' + done + '/' + total + '   ');
+    };
+    return ParisSmtp.verifyBatch(records.map(function (r) { return r.email; }), smtpOpts)
+        .then(function (results) {
+            process.stderr.write('\n');
+            var byEmail = Object.create(null);
+            results.forEach(function (r) { byEmail[r.email] = r; });
+            records.forEach(function (rec) {
+                var r = byEmail[rec.email];
+                if (!r) return;
+                rec.smtpStatus  = r.smtpStatus;
+                rec.smtpCode    = r.smtpCode;
+                rec.smtpMessage = r.smtpMessage;
+                rec.mxHost      = r.mxHost;
+                rec.catchAll    = !!r.catchAll;
+            });
+            // Stats line.
+            var counts = { deliverable: 0, undeliverable: 0, unknown: 0, other: 0, catchAll: 0 };
+            records.forEach(function (rec) {
+                var s = rec.smtpStatus;
+                if (s === 'deliverable')      counts.deliverable++;
+                else if (s === 'undeliverable') counts.undeliverable++;
+                else if (s === 'unknown')     counts.unknown++;
+                else                          counts.other++;
+                if (rec.catchAll) counts.catchAll++;
+            });
+            process.stderr.write('  SMTP: ' + counts.deliverable + ' deliverable / '
+                + counts.undeliverable + ' undeliverable / ' + counts.unknown
+                + ' unknown / ' + counts.other + ' other ('
+                + counts.catchAll + ' on catch-all domains)\n');
+            // --exclude-catchall: drop records on catch-all domains.
+            if (args.flags['exclude-catchall']) {
+                var before = records.length;
+                records = records.filter(function (rec) { return !rec.catchAll; });
+                if (records.length !== before) {
+                    process.stderr.write('  --exclude-catchall: dropped ' + (before - records.length) + ' record(s) on catch-all domains\n');
+                }
+            }
+            return records;
+        });
+}
+
+// --exclude-disposable: drop records whose domain is a known throwaway-mail
+// provider. Operates without an SMTP connection.
+function _applyDisposableFilter(records, args) {
+    if (!args.flags['exclude-disposable']) return records;
+    if (!records || !records.length) return records;
+    var before = records.length;
+    var kept = records.filter(function (r) {
+        var d = (r.email || '').split('@').pop();
+        return !ParisSmtp.isDisposableDomain(d);
+    });
+    if (kept.length !== before) {
+        process.stderr.write('  --exclude-disposable: dropped ' + (before - kept.length) + ' record(s) on disposable domains\n');
+    }
+    return kept;
 }
 
 // ── DuckDuckGo HTML SERP scraper ────────────────────────────────────────────
@@ -536,17 +630,21 @@ function formatOutput(records, fmt) {
     if (fmt === 'json') return JSON.stringify(records, null, 2);
     if (fmt === 'csv') {
         // Include `name` column when any record carries one (added in v4.6
-        // by EmailExtractor.extractEmailsWithContext).
+        // by EmailExtractor.extractEmailsWithContext). SMTP columns are
+        // added when any record has a smtpStatus (added by --smtp).
         var hasName = records.some(function (r) { return r && r.name; });
-        var header = hasName
-            ? 'email,name,source,confidence,sourceUrl'
-            : 'email,source,confidence,sourceUrl';
-        var lines = [header];
+        var hasSmtp = records.some(function (r) { return r && r.smtpStatus; });
+        var cols = ['email'];
+        if (hasName) cols.push('name');
+        cols.push('source', 'confidence', 'sourceUrl');
+        if (hasSmtp) cols.push('smtpStatus', 'catchAll');
+        var lines = [cols.join(',')];
         records.forEach(function (r) {
             var safe = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
-            var row = hasName
-                ? [safe(r.email), safe(r.name || ''), safe(r.source || ''), safe(r.confidence || ''), safe(r.sourceUrl || '')]
-                : [safe(r.email), safe(r.source || ''), safe(r.confidence || ''), safe(r.sourceUrl || '')];
+            var row = [safe(r.email)];
+            if (hasName) row.push(safe(r.name || ''));
+            row.push(safe(r.source || ''), safe(r.confidence || ''), safe(r.sourceUrl || ''));
+            if (hasSmtp) row.push(safe(r.smtpStatus || ''), safe(r.catchAll ? 'true' : 'false'));
             lines.push(row.join(','));
         });
         return lines.join('\n');
@@ -888,6 +986,13 @@ function recordHistory(records, meta) {
             if (meta.command) prev.lastCommand = meta.command;
             if (r.sourceUrl) prev.lastSourceUrl = r.sourceUrl;
             if (meta.footprint) prev.lastFootprint = meta.footprint;
+            // Persist SMTP verification result when present so re-runs can
+            // skip already-verified addresses (or honour --no-skip-seen).
+            if (r.smtpStatus) {
+                prev.smtpStatus = r.smtpStatus;
+                prev.smtpVerifiedAt = now;
+                if (typeof r.catchAll === 'boolean') prev.catchAll = r.catchAll;
+            }
         } else {
             HISTORY_MAP[key] = {
                 firstSeen: now,
@@ -898,6 +1003,11 @@ function recordHistory(records, meta) {
                 source: r.source || '',
                 confidence: r.confidence || 0
             };
+            if (r.smtpStatus) {
+                HISTORY_MAP[key].smtpStatus = r.smtpStatus;
+                HISTORY_MAP[key].smtpVerifiedAt = now;
+                if (typeof r.catchAll === 'boolean') HISTORY_MAP[key].catchAll = r.catchAll;
+            }
         }
         HISTORY_DIRTY = true;
     });
@@ -1063,7 +1173,7 @@ function cmdExtract(args) {
 function cmdSearch(args) {
     var query = args.pos.join(' ');
     if (!query) {
-        console.error('usage: paris search "<query>" [--country CC] [--industry NAME] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--exclude-isp] [--include-roles] [--rfc-strict] [--min-confidence N] [--strict] [--domain D] [--mx] [--exclude-catchall] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--cse CX] [--desktop] [--history PATH]');
+        console.error('usage: paris search "<query>" [--country CC] [--industry NAME] [--max-pages N] [--concurrency N] [--out F] [--format json|csv|txt] [--exclude-isp] [--include-roles] [--rfc-strict] [--min-confidence N] [--strict] [--domain D] [--mx] [--smtp] [--smtp-timeout MS] [--smtp-helo H] [--smtp-from A] [--smtp-concurrency N] [--exclude-catchall] [--exclude-disposable] [--follow-contact] [--no-skip-seen] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--cse CX] [--desktop] [--history PATH]');
         process.exit(1);
     }
     var maxPages    = args.flags['max-pages'] != null ? parseInt(args.flags['max-pages'], 10) : 2;
@@ -1143,6 +1253,18 @@ function cmdSearch(args) {
                     });
             }
             return allRecords;
+        }).then(function (records) {
+            // SMTP step (after MX). Only the records still alive at this
+            // point are probed. --exclude-disposable runs first because
+            // it's free.
+            records = _applyDisposableFilter(records, args);
+            return _applySmtpStep(records, args).then(function (records2) {
+                // Persist smtpStatus into history on the way out.
+                if (records2 && records2.length && records2.some(function (r) { return r && r.smtpStatus; })) {
+                    recordHistory(records2, { command: 'search' });
+                }
+                return records2;
+            });
         });
     }).then(function (records) {
         writeOutput(formatOutput(records, fmt), out, { fmt: fmt, command: 'search', label: _labelFromSearchQuery(query), desktop: !!args.flags.desktop });
@@ -1192,8 +1314,31 @@ function cmdFootprint(args) {
     }, Promise.resolve()).then(function () {
         collected = applyHistoryFilter(collected, historyOpts);
         recordHistory(collected, { command: 'footprint', footprint: match.name });
-        var fmt = args.flags.format || 'txt';
-        writeOutput(formatOutput(collected, fmt), args.flags.out, { fmt: fmt, command: 'footprint', label: match.name, desktop: !!args.flags.desktop });
+        // MX step (was previously implicit in inner search via --mx; we
+        // intentionally leave the inner runSearchInternal MX-free and run
+        // it ONCE here over the merged batch).
+        var mxStep = Promise.resolve(collected);
+        if (args.flags.mx) {
+            process.stderr.write('Validating MX for ' + collected.length + ' email(s)…\n');
+            mxStep = validateEmailMx(collected.map(function (r) { return r.email; }))
+                .then(function (mx) {
+                    var validSet = {};
+                    mx.valid.forEach(function (e) { validSet[e] = true; });
+                    collected.forEach(function (r) { r.mxValid = !!validSet[r.email]; });
+                    process.stderr.write('  MX-valid: ' + mx.valid.length + ' / invalid: ' + mx.invalid.length + '\n');
+                    return collected;
+                });
+        }
+        return mxStep.then(function (records) {
+            records = _applyDisposableFilter(records, args);
+            return _applySmtpStep(records, args);
+        }).then(function (records) {
+            if (records && records.length && records.some(function (r) { return r && r.smtpStatus; })) {
+                recordHistory(records, { command: 'footprint', footprint: match.name });
+            }
+            var fmt = args.flags.format || 'txt';
+            writeOutput(formatOutput(records, fmt), args.flags.out, { fmt: fmt, command: 'footprint', label: match.name, desktop: !!args.flags.desktop });
+        });
     });
 }
 
@@ -1247,7 +1392,7 @@ function runSearchInternal(args) {
 function cmdPermute(args) {
     var first = args.pos[0], last = args.pos[1], dom = args.pos[2];
     if (!first || !last || !dom) {
-        console.error('usage: paris permute <firstName> <lastName> <domain> [--middle X] [--unusual] [--mx]');
+        console.error('usage: paris permute <firstName> <lastName> <domain> [--middle X] [--unusual] [--mx] [--smtp] [--smtp-timeout MS] [--smtp-helo H] [--smtp-from A] [--smtp-concurrency N] [--exclude-catchall] [--exclude-disposable]');
         process.exit(1);
     }
     var perms = EmailExtractor.generatePermutations(first, last, dom, {
@@ -1255,35 +1400,67 @@ function cmdPermute(args) {
         includeUnusual: !!args.flags.unusual
     });
     var permLabel = first + '.' + last + '@' + dom;
-    if (!args.flags.mx) {
+    var fmt = args.flags.format || 'txt';
+
+    if (!args.flags.mx && !args.flags.smtp) {
         writeOutput(perms.join('\n'), args.flags.out, { fmt: 'txt', command: 'permute', label: permLabel, desktop: !!args.flags.desktop });
         return Promise.resolve();
     }
-    return validateEmailMx(perms).then(function (mx) {
-        var rec = perms.map(function (e) { return { email: e, mxValid: mx.valid.indexOf(e) !== -1 }; });
-        var fmt = args.flags.format || 'txt';
-        writeOutput(formatOutput(rec.filter(function (r) { return r.mxValid; }), fmt), args.flags.out, { fmt: fmt, command: 'permute', label: permLabel, desktop: !!args.flags.desktop });
+    var rec = perms.map(function (e) { return { email: e }; });
+
+    var mxStep = Promise.resolve(rec);
+    if (args.flags.mx) {
+        mxStep = validateEmailMx(perms).then(function (mx) {
+            rec.forEach(function (r) { r.mxValid = mx.valid.indexOf(r.email) !== -1; });
+            // When --mx is on, drop MX-invalid before SMTP probe (saves time).
+            return rec.filter(function (r) { return r.mxValid; });
+        });
+    }
+    return mxStep.then(function (records) {
+        records = _applyDisposableFilter(records, args);
+        return _applySmtpStep(records, args);
+    }).then(function (records) {
+        // For permute, --smtp filters down to deliverable when set.
+        if (args.flags.smtp) {
+            records = records.filter(function (r) { return r.smtpStatus === 'deliverable'; });
+        }
+        writeOutput(formatOutput(records, fmt), args.flags.out, { fmt: fmt, command: 'permute', label: permLabel, desktop: !!args.flags.desktop });
     });
 }
 
 function cmdMx(args) {
     if (args.pos.length === 0) {
-        console.error('usage: paris mx <email> [<email> ...] [--out F] [--format json|csv|txt] [--desktop]');
+        console.error('usage: paris mx <email> [<email> ...] [--out F] [--format json|csv|txt] [--desktop] [--smtp] [--smtp-timeout MS] [--smtp-helo H] [--smtp-from A] [--smtp-concurrency N] [--exclude-catchall] [--exclude-disposable]');
         process.exit(1);
     }
     var concurrency = args.flags.concurrency != null ? parseInt(args.flags.concurrency, 10) : 8;
     return validateEmailMx(args.pos, concurrency).then(function (mx) {
         var rec = args.pos.map(function (e) { return { email: e, mxValid: mx.valid.indexOf(e) !== -1 }; });
+        return rec;
+    }).then(function (rec) {
+        rec = _applyDisposableFilter(rec, args);
+        return _applySmtpStep(rec, args);
+    }).then(function (rec) {
+        // Persist smtpStatus into history so future re-runs can skip
+        // already-verified addresses (recordHistory writes smtpStatus
+        // when present on the records).
+        if (rec.some(function (r) { return r && r.smtpStatus; })) {
+            var historyOpts = _historyOptsFromArgs(args);
+            loadHistory(historyOpts.historyPath);
+            recordHistory(rec, { command: 'mx' });
+        }
         var fmt = args.flags.format || 'txt';
-        // Label the saved file by the first email's domain so a single-domain
-        // batch ends up as e.g. "paris-mx-acme.com-2026-…"
         var firstDomain = '';
         if (args.pos[0] && args.pos[0].indexOf('@') !== -1) {
             firstDomain = args.pos[0].split('@')[1];
         }
         var mxLabel = (args.pos.length === 1 ? args.pos[0] : firstDomain) || 'mx';
         if (fmt === 'txt') {
-            writeOutput(rec.map(function (r) { return (r.mxValid ? '[ok] ' : '[--] ') + r.email; }).join('\n'), args.flags.out, { fmt: 'txt', command: 'mx', label: mxLabel, desktop: !!args.flags.desktop });
+            writeOutput(rec.map(function (r) {
+                var label = r.mxValid ? '[ok] ' : '[--] ';
+                if (r.smtpStatus) label = '[' + r.smtpStatus.slice(0,4).padEnd(4) + (r.catchAll ? '*' : ' ') + '] ';
+                return label + r.email;
+            }).join('\n'), args.flags.out, { fmt: 'txt', command: 'mx', label: mxLabel, desktop: !!args.flags.desktop });
         } else {
             writeOutput(formatOutput(rec, fmt), args.flags.out, { fmt: fmt, command: 'mx', label: mxLabel, desktop: !!args.flags.desktop });
         }
@@ -1437,8 +1614,17 @@ function help() {
         '                          /about, /team, /people, /staff, /leadership pages',
         '                          (also boosts confidence by +10 for emails found on these pages)',
         '  --mx                    MX-validate every result before output',
-        '  --exclude-catchall      With --mx, drop emails on catch-all domains (where the',
-        '                          server accepts any address — these are usually low-value).',
+        '  --smtp                  RCPT-level SMTP verify each result (port 25, real',
+        '                          conversation; rate-sensitive — default concurrency 4).',
+        '                          Adds smtpStatus + catchAll columns to CSV/JSON output.',
+        '  --smtp-timeout MS       Per-connection SMTP timeout (default: 10000)',
+        '  --smtp-helo HOST        Override HELO/EHLO domain (default: paris-verifier.local)',
+        '  --smtp-from ADDR        Override MAIL FROM:<addr> (default: postmaster@<helo>)',
+        '  --smtp-concurrency N    Domain-level concurrency for SMTP probes (default: 4)',
+        '  --exclude-catchall      With --smtp, drop emails on catch-all domains (where',
+        '                          a random 16-char local part is also accepted).',
+        '  --exclude-disposable    Drop emails on known throwaway-mail providers',
+        '                          (mailinator, tempmail, guerrillamail, …)',
         '',
         'HISTORY / DATE OPTIONS  (re-runs never repeat the same emails)',
         '  --no-skip-seen          Disable history filtering for this run',
